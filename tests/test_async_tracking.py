@@ -204,18 +204,78 @@ def test_first_camera_frame_timestamp():
 
 def test_async_hand_tracker_stop_race_safety():
     """
-    Verifies that stopping AsyncHandTracker while inference or capture is active
-    joins the worker thread safely without closing MediaPipe concurrently.
+    Deterministic concurrency regression test proving that tracker.close()
+    cannot execute while the worker thread is inside an inference section
+    holding _config_lock, and that close() executes exactly once upon shutdown.
     """
-    from vision_tracker import AsyncHandTracker, ThreadedCamera
-    import time
+    import threading
+    from vision_tracker import AsyncHandTracker
 
-    cam = ThreadedCamera(src=999, width=640, height=480)
-    tracker = AsyncHandTracker(camera=cam, max_num_hands=1, init_mediapipe=False)
-    tracker.start()
-    time.sleep(0.05)
-    tracker.stop()
-    assert not tracker.is_running
-    if tracker._thread is not None:
-        assert not tracker._thread.is_alive()
-    assert tracker.tracker.hands is None
+    inference_entered = threading.Event()
+    release_inference = threading.Event()
+    close_called = threading.Event()
+    close_call_count = 0
+    in_inference = False
+
+    class FakeCamera:
+        def __init__(self):
+            self._frame_id = 0
+
+        def read_sequenced(self):
+            self._frame_id += 1
+            return True, np.zeros((10, 10, 3), dtype=np.uint8), self._frame_id, 100.0 + self._frame_id * 0.016
+
+    class FakeTracker:
+        def __init__(self):
+            self.hands = None
+
+        def process(self, frame, timestamp=None):
+            nonlocal in_inference
+            in_inference = True
+            inference_entered.set()
+            released = release_inference.wait(timeout=5.0)
+            in_inference = False
+            assert released, "Timeout waiting for test to release inference"
+            return []
+
+        def close(self):
+            nonlocal close_call_count
+            assert not in_inference, "Fatal race: tracker.close() called while inference is actively executing!"
+            close_call_count += 1
+            close_called.set()
+
+    fake_cam = FakeCamera()
+    fake_tracker = FakeTracker()
+
+    async_tracker = AsyncHandTracker(camera=fake_cam, init_mediapipe=False)
+    async_tracker.tracker = fake_tracker
+
+    # Start the worker thread
+    async_tracker.start()
+
+    # 1. Wait until worker enters inference section (inside with self._config_lock:)
+    assert inference_entered.wait(timeout=5.0), "Worker did not enter inference section"
+    assert in_inference, "Worker must be actively in inference"
+    assert async_tracker._config_lock.locked(), "_config_lock must be held during inference"
+
+    # 2. Request stop() from another thread while inference holds _config_lock
+    stop_thread = threading.Thread(target=async_tracker.stop, name="StopThread")
+    stop_thread.start()
+
+    # 3. Verify tracker.close() has NOT executed while inference owns _config_lock
+    assert not close_called.is_set(), "tracker.close() executed prematurely while inference was running"
+    assert close_call_count == 0
+
+    # 4. Release the fake inference so worker can finish current step
+    release_inference.set()
+
+    # 5. Wait for stop_thread to complete (joins worker thread and calls close under _config_lock)
+    stop_thread.join(timeout=5.0)
+    assert not stop_thread.is_alive(), "stop() failed to complete within timeout"
+
+    # 6. Verify worker thread has exited and close executed exactly once
+    assert not async_tracker.is_running
+    if async_tracker._thread is not None:
+        assert not async_tracker._thread.is_alive(), "Worker thread must have exited"
+    assert close_called.is_set(), "tracker.close() must be called on shutdown"
+    assert close_call_count == 1, f"Expected close() to execute exactly once, got {close_call_count}"

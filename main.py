@@ -30,6 +30,7 @@ from dataclasses import dataclass
 import logging
 import sys
 import time
+from types import MappingProxyType
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -48,6 +49,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MainApp")
 
+# Module-level immutable guitar keyboard chord mapping (Key code -> Chord Name)
+GUITAR_KEY_CHORD_MAP: MappingProxyType[int, str] = MappingProxyType({
+    ord("1"): "C", ord("c"): "C", ord("C"): "C",
+    ord("2"): "G", ord("g"): "G", ord("G"): "G",
+    ord("3"): "D", ord("d"): "D", ord("D"): "D",
+    ord("4"): "A", ord("a"): "A", ord("A"): "A",
+    ord("5"): "E", ord("e"): "E", ord("E"): "E",
+    ord("6"): "Am",
+    ord("7"): "Em",
+    ord("8"): "Dm",
+    ord("9"): "F", ord("f"): "F", ord("F"): "F",
+})
+
+# Filter cycle keyboard shortcuts
+FILTER_CYCLE_KEYS: Tuple[int, ...] = (ord("k"), ord("K"))
+
 # MediaPipe Hand Skeleton connections (Pairs of landmark indices)
 HAND_CONNECTIONS = [
     # Palm
@@ -58,6 +75,7 @@ HAND_CONNECTIONS = [
     (13, 17), (17, 18), (18, 19), (19, 20), # Pinky
     (0, 17) # Base
 ]
+
 
 
 @dataclass(frozen=True)
@@ -346,7 +364,7 @@ class GestureARApp:
                     self.async_tracker.model_complexity = new_mc
                     mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
                     logger.info("AI tracking model switched to: %s", mode_lbl)
-                elif key in (ord("k"), ord("K")):
+                elif key in FILTER_CYCLE_KEYS:
                     # Cycle hand tracking filter mode: 1-Euro -> deadband -> ema -> raw -> 1-Euro
                     cur_mode = self.hand_tracker.filter_mode.lower()
                     if cur_mode == "one_euro":
@@ -365,22 +383,10 @@ class GestureARApp:
                     # Open native hardware camera properties dialog
                     logger.info("Requesting hardware camera properties dialog [P]...")
                     self.camera.open_settings_dialog()
-                elif self.guitar is not None:
-                    chord_key_map = {
-                        ord("1"): "C", ord("c"): "C", ord("C"): "C",
-                        ord("2"): "G", ord("g"): "G", ord("G"): "G",
-                        ord("3"): "D", ord("d"): "D", ord("D"): "D",
-                        ord("4"): "A", ord("a"): "A", ord("A"): "A",
-                        ord("5"): "E", ord("e"): "E", ord("E"): "E",
-                        ord("6"): "Am",
-                        ord("7"): "Em",
-                        ord("8"): "Dm",
-                        ord("9"): "F", ord("f"): "F", ord("F"): "F",
-                    }
-                    if key in chord_key_map:
-                        ch = chord_key_map[key]
-                        self.guitar.set_chord(ch)
-                        logger.info("Guitar chord set to %s via keyboard hotkey", ch)
+                elif self.guitar is not None and key in GUITAR_KEY_CHORD_MAP:
+                    ch = GUITAR_KEY_CHORD_MAP[key]
+                    self.guitar.set_chord(ch)
+                    logger.info("Guitar chord set to %s via keyboard hotkey", ch)
 
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt caught.")
@@ -820,7 +826,7 @@ class GestureARApp:
         )
         cv2.putText(
             frame,
-            "Quick: [L] LOCK | [R] RESET | [M] AI | [F] RIG | [V] QUAL | [F3/TAB] DIAG | [P] CAM | [X] EXIT",
+            "Quick: [L] LOCK | [R] RESET | [M] AI | [K] RIG | [V] QUAL | [F3/TAB] DIAG | [P] CAM | [X] EXIT",
             (max(10, w - 575), h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.35,

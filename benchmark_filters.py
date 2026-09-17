@@ -4,7 +4,7 @@ benchmark_filters.py
 Deterministic Empirical Benchmark Suite for Hand Tracking Filters.
 
 Evaluates:
-- RawFilter (Baseline direct pass-through)
+- RawFilter (Algorithmic pass-through baseline with no smoothing-state delay)
 - EMAFilter (Exponential Moving Average, alpha=0.65)
 - DeadbandFilter (Adaptive Noise Gate: deadband=0.0025, motion_thresh=0.0080)
 - OneEuroFilter (Casiez et al. 2012: min_cutoff=1.0, beta=30.0, d_cutoff=1.0)
@@ -346,7 +346,7 @@ def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.cs
 
     for traj_name, (ts, gt, noisy, meta), axis, is_step, step_t, step_mag, is_periodic, osc_f, is_stat in trajectories:
         print(f"\n--- Scenario: {traj_name} (Duration: {meta['duration_s']}s, N={meta['sample_count']}, sigma={meta['noise_std']}) ---")
-        header = f"{'Filter Name':<28} | {'RMSE':<8} | {'MAE':<8} | {'Stat.Jitter':<11} | {'Resid.Noise':<11} | {'Lag (ms)':<9} | {'Settling (ms)'}"
+        header = f"{'Filter Name':<28} | {'RMSE':<8} | {'MAE':<8} | {'Stat.Jitter':<11} | {'Error-Delta':<11} | {'Lag (ms)':<9} | {'Settling (ms)'}"
         print(header)
         print("-" * len(header))
 

@@ -288,7 +288,7 @@ class BaseFilter(ABC):
 
 
 class RawFilter(BaseFilter):
-    """Pure pass-through filter with zero modification (0ms delay baseline)."""
+    """Pure pass-through filter with zero modification (algorithmic pass-through baseline with no smoothing-state delay)."""
 
     def filter(self, x: np.ndarray, timestamp: float = 0.0) -> np.ndarray:
         return x.copy()
