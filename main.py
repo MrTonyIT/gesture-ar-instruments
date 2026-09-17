@@ -6,7 +6,7 @@ Main Orchestrator & Cyber HUD Visualization for Gesture AR Instruments.
 Integrates:
 - ThreadedCamera: Non-blocking video capture thread with sequence IDs and timestamps.
 - AsyncHandTracker: Dedicated worker thread with pluggable BaseFilter (OneEuroFilter default)
-  and predictive kinematic dead-reckoning extrapolation for smooth 60+ FPS interaction.
+  and predictive kinematic dead-reckoning extrapolation targeting 60 FPS interaction.
 - GestureEngine: Spatial gestures, state transitions, progress timers, and reset zones.
 - Instruments: Virtual Piano (2 octaves, black-key priority, downward velocity gating, hover suppression)
                and Virtual Guitar (authentic 9 chords, muted string suppression, 2D line strumming).

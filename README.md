@@ -88,7 +88,7 @@ All figures below are directly computed from synthetic deterministic test trajec
 | | OneEuroFilter | 0.02640 | 0.02014 | N/A | 13.10 px | 9.3 ms | 1 (16.7 ms) | N/A |
 
 > [!NOTE]
-> Phase lag is evaluated via continuous Fourier harmonic analysis. Discrete cross-correlation at 60 FPS has an integer quantization resolution of $\pm 8.3\text{ ms}$; a measurement of 0 detected frames bounds delay to $< 16.7\text{ ms}$ (sub-frame). Settling latency is measured relative to the discrete step event frame ($\Delta t = 16.7\text{ ms}$ resolution). Detailed derivations and analysis are documented in [`docs/RESEARCH.md`](docs/RESEARCH.md).
+> Phase lag is evaluated via continuous Fourier harmonic analysis. Discrete cross-correlation at an explicitly synthetic 60 FPS benchmark sampling rate has an integer quantization resolution of $\pm 8.3\text{ ms}$; a measurement of 0 detected frames bounds delay to $< 16.7\text{ ms}$ (sub-frame). Settling latency is measured relative to the discrete step event frame ($\Delta t = 16.7\text{ ms}$ resolution). Detailed derivations and analysis are documented in [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
 ---
 
@@ -118,7 +118,7 @@ flowchart TD
         GUITAR --> SYNTH
         SYNTH --> AUDIO_OUT
         GE --> HUD[Cyber HUD & Diagnostics Telemetry]
-        HUD --> DISPLAY[Window Display\n60 FPS Vectorized Overlay]
+        HUD --> DISPLAY[Window Display\nTarget 60 FPS Vectorized Overlay]
     end
 ```
 

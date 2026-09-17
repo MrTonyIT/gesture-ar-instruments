@@ -15,7 +15,7 @@ Key Features:
   * Instantaneous fingertip velocity tracking (dY/dt) for piano key press velocity gating.
 - AsyncHandTracker:
   * Decouples AI inference from UI render loop with independent snapshot lock to eliminate contention.
-  * Predictive kinematic dead-reckoning extrapolation for smooth 60+ FPS display.
+  * Predictive kinematic dead-reckoning extrapolation targeting 60 FPS display.
 """
 
 from __future__ import annotations
@@ -139,6 +139,21 @@ class ThreadedCamera:
                         self.active_backend = "dshow"
 
         if self.cap is not None and self.cap.isOpened():
+            # Truthful camera backend detection when in auto mode
+            if (self.backend == "auto" or self.active_backend == "auto") and hasattr(self.cap, "getBackendName"):
+                try:
+                    raw_backend = self.cap.getBackendName()
+                    if raw_backend:
+                        b_str = str(raw_backend).strip().lower()
+                        if "dshow" in b_str or "directshow" in b_str:
+                            self.active_backend = "dshow"
+                        elif "msmf" in b_str or "media foundation" in b_str:
+                            self.active_backend = "msmf"
+                        else:
+                            self.active_backend = b_str
+                except Exception as e:
+                    logger.debug("Could not query getBackendName() from VideoCapture: %s", e)
+
             # Request target resolution, frame rate, and minimal driver buffer
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
@@ -274,16 +289,16 @@ class ThreadedCamera:
             logger.warning("Camera settings dialog [P] is unavailable: Camera is inactive or in simulation mode.")
             return False
 
-        if sys.platform != "win32":
-            logger.warning("Camera properties dialog [P] is only supported on Windows.")
-            return False
-
         if self.active_backend.lower() != "dshow":
             logger.warning(
                 "Camera properties dialog [P] requires the DirectShow backend. "
                 "Current backend is '%s'. Launch with '--camera-backend dshow' on Windows to enable.",
                 self.active_backend,
             )
+            return False
+
+        if sys.platform != "win32":
+            logger.warning("Camera properties dialog [P] is only supported on Windows.")
             return False
 
         try:
@@ -627,7 +642,7 @@ class HandTracker:
 
         Args:
             raw_bgr_frame: Input BGR image array.
-            timestamp: Frame capture timestamp (seconds). If omitted, time.perf_counter() is used.
+            timestamp: Host acquisition timestamp (seconds). If omitted, time.perf_counter() is used.
         """
         if self.hands is None or raw_bgr_frame is None:
             return []
@@ -902,7 +917,7 @@ class AsyncHandTracker:
         Retrieves the latest tracked hands with optional Predictive Kinematic Dead-Reckoning.
         Extrapolates coordinates forward based on physical measurement age:
             dt = current_time - measurement_time
-        where measurement_time is the original camera frame capture timestamp.
+        where measurement_time is the host acquisition timestamp (monotonic host timestamp recorded immediately after frame retrieval).
         Guarantees landmarks_px and landmarks_norm remain strictly synchronized.
         """
         with self._snapshot_lock:
@@ -925,7 +940,7 @@ class AsyncHandTracker:
         if not extrapolate or not hands_copy:
             return hands_copy
 
-        # Age is elapsed time since camera visual frame capture, clamped for safety
+        # Age is elapsed time since monotonic host acquisition timestamp, clamped for safety
         dt = float(np.clip(current_time - measurement_time, 0.0, 0.060))  # max 60ms forward projection
         if dt <= 0.002:
             return hands_copy

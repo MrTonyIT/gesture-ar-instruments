@@ -42,9 +42,9 @@ def async_tracker():
 def test_extrapolation_age_uses_measurement_timestamp(async_tracker):
     """
     Verifies that kinematic dead-reckoning extrapolation measures age from
-    the optical frame capture timestamp (T0), NOT the AI publication timestamp (T1).
+    the host acquisition timestamp (T0), NOT the AI publication timestamp (T1).
     """
-    t_capture = 10.000       # T0: camera frame capture
+    t_capture = 10.000       # T0: monotonic host acquisition timestamp
     t_publish = 10.016       # T1: AI inference completed and published
     t_render = 10.040        # T2: UI frame render time
 
@@ -511,3 +511,108 @@ def test_async_hand_tracker_stop_race_safety():
         assert not async_tracker._thread.is_alive(), "Worker thread must have exited"
     assert close_called.is_set(), "tracker.close() must be called on shutdown"
     assert close_call_count == 1, f"Expected close() to execute exactly once, got {close_call_count}"
+
+
+def test_threaded_camera_backend_detection_and_settings_dialog(monkeypatch):
+    """
+    Hardware-independent tests proving:
+    1. Truthful backend detection via getBackendName() in auto mode (DSHOW -> dshow, MSMF -> msmf).
+    2. Fallback to 'auto' when backend detection is unavailable.
+    3. Detected DirectShow permits the settings dialog path on Windows.
+    4. Detected MSMF rejects the settings dialog path.
+    """
+    import sys
+    import cv2
+    from vision_tracker import ThreadedCamera
+
+    class FakeCap:
+        def __init__(self, backend_name=None, settings_result=True):
+            self._backend_name = backend_name
+            self._settings_result = settings_result
+            self._opened = True
+            self.settings_called = False
+
+        def isOpened(self):
+            return self._opened
+
+        def set(self, prop, val):
+            if prop == cv2.CAP_PROP_SETTINGS:
+                self.settings_called = True
+                return self._settings_result
+            return True
+
+        def read(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def grab(self):
+            return True
+
+        def retrieve(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def release(self):
+            self._opened = False
+
+        def getBackendName(self):
+            if self._backend_name is None:
+                raise AttributeError("No backend name available")
+            return self._backend_name
+
+    # 1. DirectShow detected in auto mode -> active_backend becomes "dshow" and permits settings dialog
+    dshow_cap = FakeCap(backend_name="DSHOW", settings_result=True)
+    cam_dshow = ThreadedCamera(src=0, width=640, height=480, backend="auto", cap=dshow_cap)
+    cam_dshow.start()
+    try:
+        assert cam_dshow.active_backend == "dshow"
+        # On Windows, settings dialog is permitted and calls CAP_PROP_SETTINGS
+        monkeypatch.setattr(sys, "platform", "win32")
+        result = cam_dshow.open_settings_dialog()
+        assert result is True
+        assert dshow_cap.settings_called is True
+    finally:
+        cam_dshow.stop()
+
+    # 2. MSMF detected in auto mode -> active_backend becomes "msmf" and rejects settings dialog
+    msmf_cap = FakeCap(backend_name="MSMF", settings_result=True)
+    cam_msmf = ThreadedCamera(src=0, width=640, height=480, backend="auto", cap=msmf_cap)
+    cam_msmf.start()
+    try:
+        assert cam_msmf.active_backend == "msmf"
+        monkeypatch.setattr(sys, "platform", "win32")
+        result = cam_msmf.open_settings_dialog()
+        # Must be rejected because active_backend is msmf, not dshow
+        assert result is False
+        assert msmf_cap.settings_called is False
+    finally:
+        cam_msmf.stop()
+
+    # 3. No getBackendName available -> keeps fallback "auto"
+    class FakeCapNoBackend:
+        def __init__(self):
+            self._opened = True
+
+        def isOpened(self):
+            return self._opened
+
+        def set(self, prop, val):
+            return True
+
+        def read(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def grab(self):
+            return True
+
+        def retrieve(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def release(self):
+            self._opened = False
+
+    fallback_cap = FakeCapNoBackend()
+    cam_auto = ThreadedCamera(src=0, width=640, height=480, backend="auto", cap=fallback_cap)
+    cam_auto.start()
+    try:
+        assert cam_auto.active_backend == "auto"
+    finally:
+        cam_auto.stop()

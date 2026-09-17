@@ -43,8 +43,10 @@ jobs:
           python -m venv fresh-env
           ./fresh-env/bin/python -m pip install --upgrade pip
           ./fresh-env/bin/pip install .
+          ./fresh-env/bin/python -m pip check
           ./fresh-env/bin/gesture-ar --help
           ./fresh-env/bin/python -c "import main, vision_tracker, gesture_engine, instruments, audio_engine; print('Fresh environment import success!')"
+          ./fresh-env/bin/python -c "import mediapipe as mp; assert hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'), 'Missing mp.solutions.hands'; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.hands is not None, 'MediaPipe Hands graph failed to initialize'; tracker.close(); print('MediaPipe Hands graph initialized and closed cleanly!')"
 
       - name: Syntax and Bytecode Compilation
         run: |
@@ -102,5 +104,23 @@ jobs:
         run: |
           python benchmark_filters.py
           git diff --exit-code -- benchmarks/filter_benchmark_results.csv
+
+      - name: Windows Isolated Fresh-Env Install & External Directory Smoke Test
+        shell: powershell
+        run: |
+          python -m venv fresh-env-win
+          .\fresh-env-win\Scripts\python -m pip install --upgrade pip
+          .\fresh-env-win\Scripts\pip install .
+          .\fresh-env-win\Scripts\python -m pip check
+          $envPython = (Resolve-Path .\fresh-env-win\Scripts\python.exe).Path
+          $envGestureAr = (Resolve-Path .\fresh-env-win\Scripts\gesture-ar.exe).Path
+          $env:REPO_ROOT = (Get-Location).Path
+          $tempDir = [System.IO.Path]::GetTempPath()
+          Set-Location $tempDir
+          & $envGestureAr --help
+          & $envPython -c "import os, main; print('Resolved main.__file__:', main.__file__); mf = os.path.abspath(main.__file__).lower(); rf = os.path.abspath(os.environ['REPO_ROOT']).lower(); assert 'site-packages' in mf, f'main not in site-packages: {main.__file__}'; assert not mf.startswith(rf), f'main imported from git checkout: {main.__file__}'"
+          & $envPython -c "import mediapipe as mp; assert hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'), 'Missing mp.solutions.hands'; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.hands is not None, 'MediaPipe Hands graph failed to initialize'; tracker.close(); print('Windows MediaPipe Hands graph initialized and closed cleanly in fresh env!')"
+          Set-Location $env:REPO_ROOT
+
 
 
