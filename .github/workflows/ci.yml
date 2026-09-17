@@ -55,10 +55,9 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -v --tb=short 2>&1 | tee pytest_output.log || {
-            echo "## Pytest Failed" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat pytest_output.log >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -E 'FAILED|ERROR|AssertionError|assert' pytest_output.log | head -n 25 | while IFS= read -r l; do
+              echo "::error title=Pytest::$l"
+            done
             exit 1
           }
 
