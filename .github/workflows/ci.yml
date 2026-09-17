@@ -28,7 +28,7 @@ jobs:
       - name: Install system audio and OpenGL dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libportaudio2 libsndfile1 libgl1 libglib2.0-0
+          sudo apt-get install -y libasound2-dev libportaudio2 libsndfile1 libgl1 libglib2.0-0 libgles2 libegl1
 
       - name: Install Python dependencies
         run: |
@@ -53,13 +53,7 @@ jobs:
 
       - name: Headless Test Suite
         run: |
-          set -o pipefail
-          python -m pytest -v --tb=short 2>&1 | tee pytest_output.log || {
-            grep -E 'FAILED|ERROR|AssertionError|assert' pytest_output.log | head -n 25 | while IFS= read -r l; do
-              echo "::error title=Pytest::$l"
-            done
-            exit 1
-          }
+          python -m pytest -v --tb=short
 
       - name: Tracking Filter Benchmark Verification
         run: |
