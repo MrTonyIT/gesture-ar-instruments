@@ -314,9 +314,9 @@ class DeadbandFilter(BaseFilter):
     """
     Adaptive Deadband (Noise-Gate) Filter for Real-Time AR Hand Rigging.
 
-    Engineering Guarantees:
-    - Zero phase lag during intentional motion (1:1 pass-through above motion threshold).
-    - Locks coordinate drift / camera sensor noise when stationary below deadband threshold.
+    Design Characteristics:
+    - Designed for near-zero phase lag during rapid motion (direct 1:1 pass-through above motion threshold).
+    - Attenuates coordinate drift / camera sensor noise when stationary below deadband threshold.
     """
 
     def __init__(

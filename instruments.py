@@ -751,7 +751,7 @@ class Guitar:
             body_x = max(target_neck[0] + 320.0, raw_body_x + 40.0)
             target_body = np.array([body_x, body_y], dtype=np.float32)
 
-            # Instantaneous Zero-Lag Adaptive Pose Tracking for Guitar Anchors
+            # Direct Adaptive Pose Tracking for Guitar Anchors
             delta_n = float(np.linalg.norm(target_neck - self.current_neck_pt))
             delta_b = float(np.linalg.norm(target_body - self.current_body_pt))
             a_neck = 1.0 if delta_n > 14.0 else (0.90 if delta_n > 2.5 else 0.0)

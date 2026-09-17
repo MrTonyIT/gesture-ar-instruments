@@ -4,18 +4,23 @@ main.py
 Main Orchestrator & Cyber HUD Visualization for Gesture AR Instruments.
 
 Integrates:
-- ThreadedCamera: Non-blocking 60 FPS video capture.
-- HandTracker: MediaPipe hand landmarks with mirrored coordinates and EMA smoothing.
+- ThreadedCamera: Non-blocking video capture thread with sequence IDs and timestamps.
+- AsyncHandTracker: Dedicated worker thread with pluggable BaseFilter (OneEuroFilter default)
+  and predictive kinematic dead-reckoning extrapolation for smooth 60+ FPS interaction.
 - GestureEngine: Spatial gestures, state transitions, progress timers, and reset zones.
-- Instruments: Virtual Piano (2 octaves, black-key priority, velocity gating)
-               and Virtual Guitar (chord fretboard, 2D line-segment strumming).
-- AudioEngine: Non-blocking real-time procedural additive and damped harmonic sound.
+- Instruments: Virtual Piano (2 octaves, black-key priority, downward velocity gating, hover suppression)
+               and Virtual Guitar (authentic 9 chords, muted string suppression, 2D line strumming).
+- AudioEngine: Non-blocking procedural additive and plucked string synthesis with soft limiting.
 
 Controls:
-- Both Hands 'L' Shape: Spawn & Lock Piano (hold 1.2s).
-- Left Hand 'O' Pinch: Spawn & Lock Guitar (hold 1.2s).
-- Both Wrists to Top 10%: Global Reset to IDLE.
-- Press 'q' or ESC: Graceful exit.
+- Both Hands 'L' Shape: Spawn & Lock Piano to desk surface (hold 1.2s).
+- Thumb & Index Touch + Pull Apart: Sculpt virtual guitar neck rails; sculpt soundbox and snap together.
+- Fretboard Hotkeys 1–9 or C, G, D, A, E, F: Select authentic guitar chords.
+- F3, Tab, or ` : Toggle Developer Diagnostics HUD.
+- V: Cycle Visual Quality Profiles (HIGH, BALANCED, LOW).
+- F: Cycle Hand Tracking Filters (1€ -> Deadband -> EMA -> Raw).
+- Hold [RESET] Button (0.7s) or Both Wrists to Top 10%: Global Reset to IDLE.
+- Hold [EXIT] Button (3.0s), 'q', or ESC: Graceful exit.
 """
 
 from __future__ import annotations
@@ -55,7 +60,7 @@ HAND_CONNECTIONS = [
 
 
 class GestureARApp:
-    """Production AR Instruments Suite Orchestrator."""
+    """AR Instruments Suite Orchestrator."""
 
     def __init__(
         self,
@@ -550,7 +555,7 @@ class GestureARApp:
             cv2.LINE_AA,
         )
 
-        # 4. Zone 3: Telemetry Capsule (Center) - Guaranteed Non-Overlapping Spacing
+        # 4. Zone 3: Telemetry Capsule (Center) - Non-Overlapping Spacing
         ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
         model_tag = "ULTRA" if getattr(self.async_tracker, "model_complexity", 1) == 1 else "HYPER"
         filt_m = self.hand_tracker.filter_mode.lower()

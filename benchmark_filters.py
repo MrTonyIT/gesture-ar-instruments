@@ -6,7 +6,7 @@ Deterministic Empirical Benchmark Suite for Hand Tracking Filters.
 Evaluates:
 - RawFilter (Baseline direct pass-through)
 - EMAFilter (Exponential Moving Average, alpha=0.65)
-- DeadbandFilter (Adaptive Zero-Lag Noise Gate: deadband=0.0025, motion_thresh=0.0080)
+- DeadbandFilter (Adaptive Noise Gate: deadband=0.0025, motion_thresh=0.0080)
 - OneEuroFilter (Casiez et al. 2012: min_cutoff=1.0, beta=30.0, d_cutoff=1.0)
 
 Scientific Metric Definitions:
@@ -17,7 +17,7 @@ Scientific Metric Definitions:
 - Residual Noise RMS: Standard deviation of consecutive error differences with true motion subtracted.
 - Phase Lag (ms): Continuous phase shift measured via Fourier harmonic analysis at the motion frequency.
 - Detected Lag (frames): Whole-sample lag from discrete cross-correlation (resolution: +/- 8.33 ms at 60 Hz).
-- Settling Time (ms): Time required to enter and permanently stay within +/-2% of step magnitude.
+- Settling Time (ms): Discrete frame latency required to permanently enter and stay within +/-2% of step magnitude (resolution: 1 frame = 16.7 ms at 60 Hz). Instantaneous response settles at sample 0 (0.0 ms delay).
 - Overshoot (%): Maximum transient excursion beyond target step level.
 """
 
@@ -41,7 +41,7 @@ def generate_stationary_noisy(
     """Generates a stationary hand position with Gaussian sensor noise."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
-    timestamps = np.linspace(0.0, duration, n_samples)
+    timestamps = np.arange(n_samples, dtype=np.float64) / fps
 
     ground_truth = np.full((n_samples, 21, 3), 0.5, dtype=np.float32)
     noise = rng.normal(0.0, noise_std, ground_truth.shape).astype(np.float32)
@@ -66,7 +66,7 @@ def generate_constant_velocity(
     """Generates linear constant velocity motion across the frame."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
-    timestamps = np.linspace(0.0, duration, n_samples)
+    timestamps = np.arange(n_samples, dtype=np.float64) / fps
 
     ground_truth = np.zeros((n_samples, 21, 3), dtype=np.float32)
     start_pos = 0.20
@@ -99,7 +99,7 @@ def generate_sinusoidal(
     """Generates sinusoidal oscillatory gesture movement."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
-    timestamps = np.linspace(0.0, duration, n_samples)
+    timestamps = np.arange(n_samples, dtype=np.float64) / fps
 
     ground_truth = np.zeros((n_samples, 21, 3), dtype=np.float32)
     for i, t in enumerate(timestamps):
@@ -131,7 +131,7 @@ def generate_step_discontinuity(
     """Generates an abrupt step displacement for transient settling time analysis."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
-    timestamps = np.linspace(0.0, duration, n_samples)
+    timestamps = np.arange(n_samples, dtype=np.float64) / fps
 
     ground_truth = np.zeros((n_samples, 21, 3), dtype=np.float32)
     for i, t in enumerate(timestamps):
@@ -163,7 +163,7 @@ def generate_rapid_strum(
     """Generates fast cyclic strumming trajectory."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
-    timestamps = np.linspace(0.0, duration, n_samples)
+    timestamps = np.arange(n_samples, dtype=np.float64) / fps
 
     ground_truth = np.zeros((n_samples, 21, 3), dtype=np.float32)
     for i, t in enumerate(timestamps):
@@ -291,9 +291,11 @@ def compute_metrics(
                 break
 
         if settled_idx is not None:
-            settling_time_ms = float((post_ts[settled_idx] - step_time) * 1000.0)
+            # Sample-aware settling latency relative to step occurrence frame (post_ts[0])
+            # Resolution is 1 frame (16.7 ms at 60 Hz); sample 0 indicates instantaneous response
+            settling_time_ms = float((post_ts[settled_idx] - post_ts[0]) * 1000.0)
         else:
-            settling_time_ms = float((post_ts[-1] - step_time) * 1000.0)
+            settling_time_ms = float((post_ts[-1] - post_ts[0]) * 1000.0)
 
         max_val = float(np.max(post_filt))
         if max_val > target:

@@ -5,7 +5,7 @@ Real-time Polyphonic Procedural Sound Synthesis Engine.
 
 Key Features:
 - Persistent background non-blocking output stream via sounddevice.OutputStream
-  (44100 Hz, stereo 2-channels, float32, blocksize 256 for <15ms latency).
+  (44100 Hz, stereo 2-channels, float32, blocksize 256; ~5.8 ms block duration at 44.1 kHz; actual device/output latency is hardware and driver dependent).
 - Active Voice Manager with thread-safe polyphony and automatic voice retirement.
 - Additive Synthesis Piano Voice with exponential ADSR envelope.
 - Plucked String Synthesis Guitar Voice via damped harmonic spectrum and chord offsets.
@@ -293,7 +293,7 @@ class AudioEngine:
     Active Voice Manager and Ultra-Low Latency Procedural Sound Engine.
 
     Coordinates:
-    - Non-blocking sounddevice.OutputStream running at 44.1 kHz, blocksize=256 (~5.8ms buffer).
+    - Non-blocking sounddevice.OutputStream running at 44.1 kHz, blocksize=256 (~5.8 ms block duration; total output latency is hardware and driver dependent).
     - Concurrent polyphony mixing with soft-limiting master bus.
     - Piano and Guitar chord/string mappings.
     - Automatic cleanup of exhausted voices.

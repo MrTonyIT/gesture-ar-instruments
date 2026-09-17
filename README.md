@@ -54,8 +54,8 @@ All tracking algorithms, geometry primitives, audio synthesis voices, and gestur
 
 ### 🎛️ 4. Pluggable Tracking Filter Hierarchy
 Choose between four filtering strategies in `vision_tracker.py`:
-- **`one_euro` (Default)**: Casiez et al. (CHI 2012) adaptive cutoff filter ($f_{c,\min} = 1.0\text{ Hz}, \beta = 30.0$). Operates in Normalized Device Coordinates (NDC) to eliminate stationary jitter ($1.77\text{ px}$ vs $5.90\text{ px}$ raw at 1080p) while adapting cutoff dynamically during rapid motion with $<1\text{ frame}$ ($8.0\text{ ms}$) phase lag.
-- **`deadband`**: Dual-threshold velocity-adaptive deadband ($\delta_{\text{static}} = 0.003, \delta_{\text{dynamic}} = 0.012$) with instantaneous step settling time ($4.2\text{ ms}$).
+- **`one_euro` (Default)**: Casiez et al. (CHI 2012) adaptive cutoff filter ($f_{c,\min} = 1.0\text{ Hz}, \beta = 30.0$). Operates in Normalized Device Coordinates (NDC) to eliminate stationary jitter ($1.77\text{ px}$ vs $5.90\text{ px}$ raw at 1080p) while adapting cutoff dynamically during rapid motion with $<1\text{ frame}$ ($7.8\text{ ms}$) phase lag.
+- **`deadband`**: Dual-threshold velocity-adaptive deadband ($\delta_{\text{static}} = 0.003, \delta_{\text{dynamic}} = 0.012$) with instantaneous step response ($0.0\text{ ms}$ delay relative to step frame).
 - **`ema`**: First-order exponential moving average ($\alpha = 0.65$).
 - **`raw`**: Unfiltered camera pass-through for latency baseline comparisons.
 
@@ -72,24 +72,24 @@ All figures below are directly computed from synthetic deterministic test trajec
 | | DeadbandFilter | 0.00271 | 0.00208 | 5.16 px | 4.97 px | N/A | 0 | N/A |
 | | **OneEuroFilter** | **0.00094** | **0.00074** | **1.77 px** | **0.84 px** | N/A | 0 | N/A |
 | **Constant Velocity (3s)**| RawFilter | 0.00197 | 0.00160 | N/A | 3.90 px | N/A | 0 | N/A |
-| | EMAFilter | 0.00223 | 0.00186 | N/A | 2.19 px | N/A | 0 | N/A |
-| | DeadbandFilter | 0.00269 | 0.00219 | N/A | 4.67 px | N/A | 0 | N/A |
-| | OneEuroFilter | 0.00305 | 0.00278 | N/A | 1.84 px | N/A | 0 | N/A |
+| | EMAFilter | 0.00222 | 0.00185 | N/A | 2.19 px | N/A | 0 | N/A |
+| | DeadbandFilter | 0.00269 | 0.00219 | N/A | 4.66 px | N/A | 0 | N/A |
+| | OneEuroFilter | 0.00304 | 0.00278 | N/A | 1.83 px | N/A | 0 | N/A |
 | **Sinusoidal 1.5Hz (4s)** | RawFilter | 0.00202 | 0.00163 | N/A | 3.92 px | 0.1 ms | 0 (< 16.7 ms) | N/A |
-| | EMAFilter | 0.01211 | 0.01081 | N/A | 3.51 px | 9.1 ms | 1 (16.7 ms) | N/A |
-| | **DeadbandFilter** | **0.00222** | **0.00180** | N/A | 4.09 px | **0.1 ms** | 0 (< 16.7 ms) | N/A |
-| | OneEuroFilter | 0.01277 | 0.00942 | N/A | 7.41 px | 8.0 ms | 0 (< 16.7 ms) | N/A |
-| **Step Response (2s)** | RawFilter | 0.00107 | 0.00083 | N/A | 1.95 px | N/A | 0 | 4.2 ms |
-| | EMAFilter | 0.01035 | 0.00192 | N/A | 16.03 px | N/A | 0 | 54.6 ms |
-| | **DeadbandFilter** | **0.00087** | **0.00079** | N/A | **0.16 px** | N/A | 0 | **4.2 ms** |
-| | OneEuroFilter | 0.00437 | 0.00085 | N/A | 7.79 px | N/A | 0 | 37.8 ms |
+| | EMAFilter | 0.01204 | 0.01075 | N/A | 3.49 px | 9.0 ms | 1 (16.7 ms) | N/A |
+| | **DeadbandFilter** | **0.00223** | **0.00180** | N/A | 4.20 px | **0.1 ms** | 0 (< 16.7 ms) | N/A |
+| | OneEuroFilter | 0.01246 | 0.00933 | N/A | 6.69 px | 7.8 ms | 0 (< 16.7 ms) | N/A |
+| **Step Response (2s)** | **RawFilter** | **0.00107** | **0.00083** | N/A | 1.95 px | N/A | 0 | **0.0 ms** |
+| | EMAFilter | 0.01035 | 0.00192 | N/A | 16.03 px | N/A | 0 | 50.0 ms |
+| | **DeadbandFilter** | **0.00087** | **0.00079** | N/A | **0.16 px** | N/A | 0 | **0.0 ms** |
+| | OneEuroFilter | 0.00440 | 0.00085 | N/A | 7.84 px | N/A | 0 | 33.3 ms |
 | **Rapid Strum 4.0Hz (3s)** | RawFilter | 0.00204 | 0.00164 | N/A | 3.85 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
-| | EMAFilter | 0.02207 | 0.01983 | N/A | 12.89 px | 8.2 ms | 0 (< 16.7 ms) | N/A |
-| | DeadbandFilter | 0.00210 | 0.00170 | N/A | 4.00 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
-| | OneEuroFilter | 0.02712 | 0.02056 | N/A | 24.29 px | 9.6 ms | 1 (16.7 ms) | N/A |
+| | EMAFilter | 0.02188 | 0.01968 | N/A | 12.76 px | 8.1 ms | 0 (< 16.7 ms) | N/A |
+| | DeadbandFilter | 0.00217 | 0.00172 | N/A | 4.21 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
+| | OneEuroFilter | 0.02640 | 0.02014 | N/A | 23.28 px | 9.3 ms | 1 (16.7 ms) | N/A |
 
 > [!NOTE]
-> Phase lag is evaluated via continuous Fourier harmonic analysis. Discrete cross-correlation at 60 FPS has an integer quantization resolution of $\pm 8.3\text{ ms}$; a measurement of 0 detected frames bounds delay to $< 16.7\text{ ms}$ (sub-frame). Detailed derivations and analysis are documented in [`docs/RESEARCH.md`](docs/RESEARCH.md).
+> Phase lag is evaluated via continuous Fourier harmonic analysis. Discrete cross-correlation at 60 FPS has an integer quantization resolution of $\pm 8.3\text{ ms}$; a measurement of 0 detected frames bounds delay to $< 16.7\text{ ms}$ (sub-frame). Settling latency is measured relative to the discrete step event frame ($\Delta t = 16.7\text{ ms}$ resolution). Detailed derivations and analysis are documented in [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
 ---
 
@@ -99,7 +99,7 @@ All figures below are directly computed from synthetic deterministic test trajec
 flowchart TD
     subgraph Hardware Layer
         CAM[Threaded Camera Capture\nIndependent Producer Thread]
-        AUDIO_OUT[Sound Card Output\nLow-Latency Buffer: 256 Samples]
+        AUDIO_OUT[Sound Card Output\nCallback Block: 256 Frames (5.8 ms)]
     end
 
     subgraph Tracking & Processing
@@ -144,8 +144,11 @@ source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install development and test dependencies
+# Install development and test tooling
 pip install -r requirements-dev.txt
+
+# (Recommended for Research / CI Reproduction) Install with verified constraints:
+# pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 ```
 
 ### 2. Launch the Application
@@ -221,7 +224,8 @@ gesture-ar-instruments/
 ├── main.py                      # Application orchestrator, ThreadedCamera & Diagnostics HUD
 ├── vision_tracker.py            # MediaPipe Hands with pluggable BaseFilter hierarchy
 ├── pyproject.toml               # PEP 517/621 project configuration & tool configs
-├── requirements.txt             # Core runtime dependencies
+├── constraints.txt              # Exact verified dependency constraints for CI & research reproduction
+├── requirements.txt             # Core runtime dependencies (flexible declarations)
 ├── requirements-dev.txt         # Development & test tooling (pytest, ruff)
 ├── LICENSE                      # MIT Open Source License
 └── README.md                    # Project documentation

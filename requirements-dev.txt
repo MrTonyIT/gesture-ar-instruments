@@ -1,2 +1,4 @@
+# Flexible development and test tooling declarations
+# For exact reproducible environments verified in CI, install with: -c constraints.txt
 pytest>=7.0.0
 ruff>=0.1.0

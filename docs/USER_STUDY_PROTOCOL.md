@@ -21,7 +21,9 @@ This protocol defines a rigorous, reproducible evaluation procedure to assess th
 ## 2. Participant Cohort & Apparatus
 
 ### 2.1 Demographics
-* **Sample Size:** $N = 24$ participants (minimum statistical power $1 - \beta = 0.85$ at $\alpha = 0.05$).
+* **Sample Size:** Proposed target cohort of $N = 24$ participants (12 novices, 12 experienced musicians).
+  - An *a-priori* power analysis conducted via G*Power for a repeated-measures within-subjects design ($4 \text{ Filter} \times 2 \text{ Posture}$ conditions), assuming a medium effect size (Cohen's $f = 0.25$, $\eta_p^2 = 0.06$), within-subject correlation $\rho = 0.50$, and non-sphericity correction $\epsilon = 1.0$ at $\alpha = 0.05$, yields a statistical power of $1 - \beta \approx 0.86$.
+  - If a smaller effect size ($f = 0.15$) is anticipated during pilot testing, $N$ must be expanded accordingly prior to trial commencement.
 * **Stratification:**
   * Group A (Novices, $n = 12$): No prior guitar or piano performance experience.
   * Group B (Musicians, $n = 12$): $\ge 2$ years active instrumental practice.
@@ -31,14 +33,14 @@ This protocol defines a rigorous, reproducible evaluation procedure to assess th
 * **Workstation:** Standard desktop PC (60 Hz display, resolution 1920x1080).
 * **Sensor:** Fixed monocular 1080p RGB webcam positioned at eye level (tilt angle $-15^\circ$ toward desk surface).
 * **Illumination:** Standard indoor diffuse office lighting (400–600 lux).
-* **Audio:** Low-latency stereo headphones (output latency $\le 10\text{ ms}$).
+* **Audio:** Stereo headphones with known hardware latency.
 * **Desk Surface:** Matte, non-reflective desk surface providing resting forearm support.
 
 ---
 
 ## 3. Experimental Design
 
-A **within-subjects factorial design** ($4 \text{ Filter Modes} \times 2 \text{ Posture Conditions}$) counterbalanced via balanced Latin squares to prevent learning and fatigue order effects.
+A **within-subjects factorial design** ($4 \text{ Filter Modes} \times 2 \text{ Posture Conditions}$) counterbalanced via balanced Latin squares to mitigate learning and fatigue order effects.
 
 ```
 +-----------------------------------------------------------------------------+
@@ -81,8 +83,9 @@ A **within-subjects factorial design** ($4 \text{ Filter Modes} \times 2 \text{ 
 
 ## 5. Evaluation Metrics & Instruments
 
-### 5.1 Objective Metrics (Automatically Logged)
-Logged per frame at $60\text{ FPS}$ into CSV session files:
+### 5.1 Objective Metrics (Required Study Instrumentation)
+> [!NOTE]
+> These objective metrics are specified for automated data logging in future experimental study instrumentation. They are not currently persisted by default in the core application codebase and must be recorded by the experimental study test harness during participant sessions:
 1. **Timestamp:** High-resolution monotonic clock (`time.perf_counter()`).
 2. **End-to-End Latency:** Time from frame capture arrival to audio sample buffer dispatch.
 3. **Tracking Error:** Spatial divergence between raw landmark detection and filtered state.
@@ -106,10 +109,17 @@ Administered immediately following each experimental block:
 
 ## 6. Statistical Analysis Plan
 
-* **Normality:** Shapiro-Wilk test on all metric distributions.
-* **Continuous Metrics (Latency, Jitter, Timing Error):** Two-way repeated measures ANOVA ($\alpha = 0.05$) with post-hoc Tukey HSD pairwise comparisons.
-* **Ordinal / Survey Metrics (NASA-TLX, SUS, Likert):** Friedman test with Wilcoxon signed-rank tests (Bonferroni-corrected) for pairwise differences.
-* **Hypothesis Criteria:**
-  * $H_1$ accepted if $p < 0.01$ for 1€ jitter vs Raw.
-  * $H_2$ accepted if NASA-TLX Physical Demand is significantly lower ($p < 0.001$, Cohen's $d > 0.80$) in Desk-Docked vs Mid-Air.
-  * $H_3$ accepted if false-positive note triggers decrease by $> 80\%$ with $p < 0.01$.
+* **Distribution Assessment:** Shapiro-Wilk test for normality and Mauchly’s test for sphericity across all repeated-measures levels. Where sphericity is violated ($\epsilon < 0.75$), Greenhouse-Geisser corrections are applied; otherwise Huynh-Feldt corrections.
+* **Continuous Metrics (Tracking Error, Jitter RMS, Timing Error):**
+  - Analyzed using Linear Mixed-Effects Models (LMM) with `Filter` (4 levels) and `Posture` (2 levels) as within-subjects fixed factors, `Musical Expertise` (Novice vs Musician) as a between-subjects fixed factor, and `Participant` as a random intercept:
+    $$\text{Metric} \sim \text{Filter} \times \text{Posture} \times \text{Expertise} + (1 \mid \text{Participant})$$
+  - Effect sizes reported as partial eta-squared ($\eta_p^2$) for omnibus tests and Cohen’s $d_z$ (with 95% bootstrap confidence intervals) for pairwise contrasts.
+* **Ordinal & Survey Instruments (NASA-TLX, SUS, Likert):**
+  - Evaluated using Aligned Rank Transform (ART) ANOVA or non-parametric Wilcoxon signed-rank tests for paired within-subjects comparisons.
+* **Multiplicity Correction:**
+  - All post-hoc pairwise comparisons are adjusted using the Holm-Bonferroni step-down procedure or Benjamini-Hochberg False Discovery Rate (FDR) control at $q = 0.05$.
+* **Hypothesis Evaluation Criteria:**
+  - $H_1$ (Jitter Reduction): Evaluated by the contrast between 1€ and Raw filter on static jitter RMS. Supported if 1€ yields a statistically significant reduction ($p_{\text{adj}} < 0.01$) with a large effect size ($d_z > 0.80$, 95% CI excluded from 0).
+  - $H_2$ (Ergonomic Fatigue): Evaluated on the NASA-TLX Physical Demand subscale. Supported if Desk-Docked posture produces significantly lower scores than Floating Mid-Air ($p_{\text{adj}} < 0.001$, $d_z \ge 0.80$, with 95% CI).
+  - $H_3$ (False Note Suppression): Evaluated by unintended strike count on the piano. Supported if downward velocity gating reduces false positives by $\ge 80\%$ compared to static geometric penetration ($p_{\text{adj}} < 0.01, \eta_p^2 > 0.14$).
+  - $H_4$ (Chord Transition Efficiency): Evaluated by inter-chord transition delay. Supported if novice participants achieve mean transition latencies $< 300\text{ ms}$ ($95\%\text{ CI} \subset [0, 300]\text{ ms}$) across consecutive strum bars.
