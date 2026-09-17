@@ -14,7 +14,7 @@ Scientific Metric Definitions:
 - MAE: Mean absolute tracking error.
 - Max Error: Maximum single-sample absolute tracking error.
 - Stationary Jitter RMS: Standard deviation of static coordinate positions at 1080p.
-- Residual Noise RMS: Standard deviation of consecutive error differences with true motion subtracted.
+- Residual Error-Delta RMS (Noise): Standard deviation of consecutive error differences with true motion subtracted.
 - Phase Lag (ms): Continuous phase shift measured via Fourier harmonic analysis at the motion frequency.
 - Detected Lag (frames): Whole-sample lag from discrete cross-correlation (resolution: +/- 8.33 ms at 60 Hz).
 - Settling Time (ms): Discrete frame latency required to permanently enter and stay within +/-2% of step magnitude (resolution: 1 frame = 16.7 ms at 60 Hz). Instantaneous response settles at sample 0 (0.0 ms delay).
@@ -230,7 +230,7 @@ def compute_metrics(
     # Select axis-appropriate reference pixel scale (X=1920, Y=1080)
     pixel_scale = REFERENCE_HEIGHT if eval_axis == 1 else REFERENCE_WIDTH
 
-    # Residual noise RMS: high-frequency error variation with true motion subtracted
+    # Residual error-delta RMS: high-frequency error variation with true motion subtracted
     # Delta e_i = e_i - e_{i-1}. Standard error std = RMS(Delta e) / sqrt(2)
     diff_errors = np.diff(errors)
     residual_noise_rms = float(np.sqrt(np.mean(diff_errors ** 2)) / np.sqrt(2.0))

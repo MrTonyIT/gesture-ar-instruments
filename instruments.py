@@ -23,7 +23,7 @@ Key Features & AR Architecture:
        * Vectorized OpenCV warpAffine and alpha blending with strict boundary clipping.
    - 6 Projected Strings:
        * 6 strings projected directly over the soundhole and bridge via the affine matrix.
-       * Line-segment intersection detects strumming by Thumb (4), Index (8), or any finger.
+       * Line-segment intersection detects strumming by Thumb (4) or Index (8).
        * Transverse standing wave oscillation with dynamic neon glow.
 """
 

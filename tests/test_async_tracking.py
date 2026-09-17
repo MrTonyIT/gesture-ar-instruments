@@ -200,3 +200,22 @@ def test_first_camera_frame_timestamp():
     finally:
         cam.stop()
 
+
+
+def test_async_hand_tracker_stop_race_safety():
+    """
+    Verifies that stopping AsyncHandTracker while inference or capture is active
+    joins the worker thread safely without closing MediaPipe concurrently.
+    """
+    from vision_tracker import AsyncHandTracker, ThreadedCamera
+    import time
+
+    cam = ThreadedCamera(src=999, width=640, height=480)
+    tracker = AsyncHandTracker(camera=cam, max_num_hands=1, init_mediapipe=False)
+    tracker.start()
+    time.sleep(0.05)
+    tracker.stop()
+    assert not tracker.is_running
+    if tracker._thread is not None:
+        assert not tracker._thread.is_alive()
+    assert tracker.tracker.hands is None

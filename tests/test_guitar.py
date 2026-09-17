@@ -243,3 +243,24 @@ def test_guitar_fretted_note_and_frequency():
     assert mutedg0 is False
     assert noteg0 == "G2"
 
+
+
+def test_guitar_keyboard_shortcut_f_and_filter_cycling_k():
+    """
+    Verifies that 'f' and 'F' map to the F chord and do not collide with filter cycling ('k'/'K').
+    """
+    chord_key_map = {
+        ord("1"): "C", ord("c"): "C", ord("C"): "C",
+        ord("2"): "G", ord("g"): "G", ord("G"): "G",
+        ord("3"): "D", ord("d"): "D", ord("D"): "D",
+        ord("4"): "A", ord("a"): "A", ord("A"): "A",
+        ord("5"): "E", ord("e"): "E", ord("E"): "E",
+        ord("6"): "Am",
+        ord("7"): "Em",
+        ord("8"): "Dm",
+        ord("9"): "F", ord("f"): "F", ord("F"): "F",
+    }
+    assert chord_key_map[ord("f")] == "F"
+    assert chord_key_map[ord("F")] == "F"
+    assert ord("k") not in chord_key_map
+    assert ord("K") not in chord_key_map

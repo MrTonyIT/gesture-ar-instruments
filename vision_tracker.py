@@ -881,11 +881,12 @@ class AsyncHandTracker:
         return hands_copy
 
     def stop(self) -> None:
-        """Stops the async worker thread and releases resources."""
+        """Stops the async worker thread and releases resources safely."""
         self.is_running = False
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-        self.tracker.close()
+            self._thread.join(timeout=2.0)
+        with self._config_lock:
+            self.tracker.close()
         logger.info("AsyncHandTracker stopped.")
 
     def close(self) -> None:

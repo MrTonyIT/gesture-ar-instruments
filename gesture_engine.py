@@ -50,7 +50,7 @@ class GestureEngine:
     """
     Evaluates geometric hand poses and executes state transitions for AR instruments.
     Supports VIP Interactive 3D Pinch-to-Sculpt & Assemble Instrument Spawning,
-    hands-free gesture-based reset, and gesture-based application shutdown.
+    on-screen touch button reset, and application shutdown.
     """
 
     HOLD_DURATION = 1.2          # Seconds required to lock an instrument

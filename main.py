@@ -18,7 +18,7 @@ Controls:
 - Fretboard Hotkeys 1-9 or C, G, D, A, E, F: Select authentic guitar chords.
 - F3, Tab, or ` : Toggle Developer Diagnostics HUD.
 - V: Cycle Visual Quality Profiles (HIGH, BALANCED, LOW).
-- F: Cycle Hand Tracking Filters (1-Euro -> Deadband -> EMA -> Raw).
+- K: Cycle Hand Tracking Filters (1-Euro -> Deadband -> EMA -> Raw).
 - Hold [RESET] Button (0.7s) or press 'r': Reset to IDLE.
 - Hold [EXIT] Button (3.0s), 'q', or ESC: Graceful exit.
 """
@@ -346,7 +346,7 @@ class GestureARApp:
                     self.async_tracker.model_complexity = new_mc
                     mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
                     logger.info("AI tracking model switched to: %s", mode_lbl)
-                elif key in (ord("f"), ord("F")):
+                elif key in (ord("k"), ord("K")):
                     # Cycle hand tracking filter mode: 1-Euro -> deadband -> ema -> raw -> 1-Euro
                     cur_mode = self.hand_tracker.filter_mode.lower()
                     if cur_mode == "one_euro":
@@ -375,7 +375,7 @@ class GestureARApp:
                         ord("6"): "Am",
                         ord("7"): "Em",
                         ord("8"): "Dm",
-                        ord("9"): "F",
+                        ord("9"): "F", ord("f"): "F", ord("F"): "F",
                     }
                     if key in chord_key_map:
                         ch = chord_key_map[key]
