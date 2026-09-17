@@ -34,7 +34,9 @@ jobs:
       - name: Install Package and Test Entry Point
         run: |
           python -m pip install --no-deps .
+          cd /tmp
           gesture-ar --help
+          python -c "import main; print('Installed location:', main.__file__)"
 
       - name: Syntax and Bytecode Compilation
         run: |
@@ -52,4 +54,5 @@ jobs:
       - name: Tracking Filter Benchmark Verification
         run: |
           python benchmark_filters.py
+          git diff --exit-code -- benchmarks/filter_benchmark_results.csv
 

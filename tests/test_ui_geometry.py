@@ -16,7 +16,7 @@ def test_draw_cyber_box_eight_distinct_corner_lines():
     Verifies that _draw_cyber_box renders exactly 8 distinct line segments
     (2 per corner: 1 horizontal and 1 vertical) with zero duplicate draw calls.
     """
-    app = GestureARApp(start_threads=False)
+    app = GestureARApp(start_threads=False, init_mediapipe=False)
     try:
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         x1, y1, x2, y2 = 100, 150, 400, 350

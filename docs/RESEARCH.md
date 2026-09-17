@@ -139,9 +139,9 @@ When a strum crosses a string whose voicing fret is `None`:
 2. **Zero synthesis voices** are added to the active audio pipeline.
 3. The visual renderer displays an `"X"` indicator near the bridge and damps string amplitude to $\le 2.5\text{ px}$ without glowing neon sparks.
 
-### 4.2 Decoupled Audio Callback & Contention-Free Mixing
+### 4.2 Decoupled Audio Callback & Lock-Minimized Audio Mixing
 To prevent priority inversions on the PortAudio callback thread:
-1. Active voices are snapshotted under mutex in sub-microsecond time.
+1. Active voices are snapshotted under mutex in a short critical section.
 2. Waveform rendering (`voice.render(frames)`) and additive mixing execute **outside the lock**. Piano voices synthesize with a percussive Attack-Decay (AD) exponential envelope, while plucked strings utilize exponential decay.
 3. Only finished voice removal re-acquires the lock briefly. Zero logging or I/O calls occur on the realtime audio thread.
 4. Hardware buffer status flags (`status.output_underflow`, `status.output_overflow`) are recorded into telemetry counters.

@@ -14,7 +14,7 @@ from vision_tracker import HandData
 
 @pytest.fixture
 def app():
-    application = GestureARApp(camera_id=0, width=1920, height=1080, start_threads=False)
+    application = GestureARApp(camera_id=0, width=1920, height=1080, start_threads=False, init_mediapipe=False)
     try:
         yield application
     finally:

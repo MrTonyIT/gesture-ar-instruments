@@ -379,6 +379,14 @@ def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.cs
             )
             print(row_str)
 
+            def _round_val(v: float | int, decimals: int) -> float | int:
+                if isinstance(v, (int, np.integer)):
+                    return int(v)
+                f_val = float(v)
+                if f_val == -1.0 or f_val == 0.0:
+                    return f_val
+                return round(f_val, decimals)
+
             record: Dict[str, str | float | int] = {
                 "trajectory": traj_name,
                 "filter": filt_name,
@@ -387,15 +395,15 @@ def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.cs
                 "nominal_fps": meta["nominal_fps"],
                 "noise_std": meta["noise_std"],
                 "seed": meta["seed"],
-                "rmse": metrics["rmse"],
-                "mae": metrics["mae"],
-                "max_err": metrics["max_err"],
-                "stationary_jitter_px_1080p": metrics["stationary_jitter_px"],
-                "residual_noise_px_1080p": metrics["residual_noise_px"],
-                "phase_lag_ms": metrics["phase_lag_ms"],
-                "detected_lag_frames": metrics["detected_lag_frames"],
-                "settling_time_ms": metrics["settling_time_ms"],
-                "overshoot_pct": metrics["overshoot_pct"],
+                "rmse": _round_val(metrics["rmse"], 6),
+                "mae": _round_val(metrics["mae"], 6),
+                "max_err": _round_val(metrics["max_err"], 6),
+                "stationary_jitter_px_1080p": _round_val(metrics["stationary_jitter_px"], 2),
+                "residual_noise_px_1080p": _round_val(metrics["residual_noise_px"], 2),
+                "phase_lag_ms": _round_val(metrics["phase_lag_ms"], 2),
+                "detected_lag_frames": int(metrics["detected_lag_frames"]),
+                "settling_time_ms": _round_val(metrics["settling_time_ms"], 2),
+                "overshoot_pct": _round_val(metrics["overshoot_pct"], 2),
             }
             results_table.append(record)
 

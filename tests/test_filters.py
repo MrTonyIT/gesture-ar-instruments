@@ -146,7 +146,7 @@ def test_filters_nan_and_inf_robustness():
 
 def test_hand_tracker_filter_switching():
     """HandTracker creates appropriate filter instances on mode switch."""
-    tracker = HandTracker(filter_mode="one_euro")
+    tracker = HandTracker(filter_mode="one_euro", init_mediapipe=False)
     f_euro = tracker._create_filter_instance()
     assert isinstance(f_euro, OneEuroFilter)
 
@@ -165,8 +165,8 @@ def test_async_hand_tracker_concurrency():
     import time
     from vision_tracker import AsyncHandTracker, ThreadedCamera
 
-    camera = ThreadedCamera(src=0, width=640, height=480)
-    async_tracker = AsyncHandTracker(camera=camera, filter_mode="one_euro")
+    camera = ThreadedCamera(src=999, width=640, height=480)
+    async_tracker = AsyncHandTracker(camera=camera, filter_mode="one_euro", init_mediapipe=False)
 
     # Simulate inference lock held
     with async_tracker._config_lock:
@@ -178,4 +178,42 @@ def test_async_hand_tracker_concurrency():
     assert isinstance(hands, list)
     # Must execute in sub-millisecond time even while config lock is occupied
     assert t_elapsed < 0.05
+
+
+def test_benchmark_artifact_consistency():
+    """
+    Verifies that committed benchmarks/filter_benchmark_results.csv:
+    1. Exists and contains all 20 records (5 trajectories x 4 filters).
+    2. Has valid header and non-empty rows.
+    3. Values match required numerical bounds and types.
+    """
+    from pathlib import Path
+    import csv
+
+    csv_path = Path(__file__).resolve().parent.parent / "benchmarks" / "filter_benchmark_results.csv"
+    assert csv_path.exists(), "Benchmark CSV artifact must be committed"
+
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = list(csv.DictReader(f))
+
+    assert len(reader) == 20, f"Expected 20 benchmark records, got {len(reader)}"
+    trajectories = {r["trajectory"] for r in reader}
+    assert len(trajectories) == 5
+    filters = {r["filter"] for r in reader}
+    assert len(filters) == 4
+
+    for r in reader:
+        assert float(r["rmse"]) >= 0.0
+        assert float(r["mae"]) >= 0.0
+        assert int(r["sample_count"]) in (120, 180, 240)
+
+
+def test_mediapipe_integration_smoke():
+    """Integration smoke test verifying that MediaPipe library is importable."""
+    import mediapipe as mp
+    assert mp is not None
+    if hasattr(mp, "solutions"):
+        assert hasattr(mp.solutions, "hands")
+
+
 

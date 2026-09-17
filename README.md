@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/OpenCV-4.8+-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" alt="OpenCV" />
   <img src="https://img.shields.io/badge/MediaPipe-Hands-007ACC?style=for-the-badge&logo=google&logoColor=white" alt="MediaPipe" />
   <img src="https://img.shields.io/badge/Audio-Procedural%20Synth%20(32%20Voices)-00E676?style=for-the-badge&logo=speaker&logoColor=white" alt="Audio Engine" />
-  <img src="https://img.shields.io/badge/Tests-52%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Pytest" />
+  <img src="https://img.shields.io/badge/Tests-73%20Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Pytest" />
   <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License" />
 </p>
 
@@ -19,7 +19,7 @@
 
 **Gesture AR Instruments** transforms standard RGB webcams into low-latency augmented reality musical instruments. Without requiring specialized hardware, wearable gloves, or depth sensors, users can sculpt virtual instruments in 3D mid-air, manipulate them with natural dual-finger touch, snap guitar components together via magnetic plasma physics, strum authentic 9-chord progressions, or dock a 24-key piano onto a physical desk surface.
 
-All tracking algorithms, geometry primitives, audio synthesis voices, and gesture state transitions are verified by a **69-test headless pytest suite** and an empirical trajectory benchmark suite.
+A 73-test automated suite covers tracking filters, geometry, synthesis, instrument interactions, packaging, and major state-machine paths.
 
 ---
 
@@ -152,6 +152,9 @@ pip install -r requirements-dev.txt
 # Or install as an editable package with CLI entry point:
 pip install .
 ```
+
+> [!NOTE]
+> Standalone distributions installed via `pip install .` automatically synthesize procedural low-poly guitar graphics via `create_procedural_blocky_guitar()` when run outside the repository root where `assets/` is not co-located.
 
 ### 2. Launch the Application
 ```bash

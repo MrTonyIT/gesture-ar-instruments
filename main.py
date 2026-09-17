@@ -19,7 +19,7 @@ Controls:
 - F3, Tab, or ` : Toggle Developer Diagnostics HUD.
 - V: Cycle Visual Quality Profiles (HIGH, BALANCED, LOW).
 - F: Cycle Hand Tracking Filters (1-Euro -> Deadband -> EMA -> Raw).
-- Hold [RESET] Button (0.7s) or Both Wrists to Top 10%: Global Reset to IDLE.
+- Hold [RESET] Button (0.7s) or press 'r': Reset to IDLE.
 - Hold [EXIT] Button (3.0s), 'q', or ESC: Graceful exit.
 """
 
@@ -113,6 +113,7 @@ class GestureARApp:
         tracker: Optional[AsyncHandTracker] = None,
         start_threads: bool = True,
         quality_profile: str = "HIGH",
+        init_mediapipe: bool = True,
     ) -> None:
         self.width = width
         self.height = height
@@ -146,6 +147,7 @@ class GestureARApp:
                 ema_alpha=0.65,
                 filter_mode="one_euro",
                 model_complexity=1,
+                init_mediapipe=init_mediapipe,
             )
             if start_threads:
                 self.async_tracker.start()
@@ -258,9 +260,9 @@ class GestureARApp:
                     self.last_overflow_time = time.perf_counter()
                     self.overflow_msg = "GUITAR NECK EXCEEDED SCREEN BOUNDS! SHAPE AUTO-PURGED"
 
-                # 4b. Check Gesture-based Application Exit (Crossed hands 'X' held for 1.8s)
+                # 4b. Check Application Exit ([EXIT] button held for 3.0s)
                 if self.gesture_engine.should_exit:
-                    logger.info("Gesture Exit confirmed by user: Shutting down application cleanly.")
+                    logger.info("Application exit confirmed: Shutting down cleanly.")
                     break
 
                 # 5. Handle Instrument Transitions

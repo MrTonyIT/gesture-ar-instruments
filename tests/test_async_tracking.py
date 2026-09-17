@@ -34,6 +34,7 @@ def async_tracker():
         camera=cam,
         max_num_hands=2,
         model_complexity=0,
+        init_mediapipe=False,
     )
     return tracker
 
@@ -167,3 +168,35 @@ def test_coordinate_synchronization_invariant(async_tracker):
     np.testing.assert_allclose(ext.landmarks_norm[:, 0], ext.landmarks_px[:, 0] / w, rtol=1e-5)
     np.testing.assert_allclose(ext.landmarks_norm[:, 1], ext.landmarks_px[:, 1] / h, rtol=1e-5)
     np.testing.assert_allclose(ext.landmarks_norm[:, 2], ext.landmarks_px[:, 2] / w, rtol=1e-5)
+
+
+def test_first_camera_frame_timestamp():
+    """
+    Verifies that ThreadedCamera.start() produces an initial frame with:
+    - a valid monotonic capture timestamp (> 0.0)
+    - a valid non-stale frame id (frame_id >= 1)
+    - synchronized _current_frame_id and _current_timestamp
+    - synchronized public telemetry fields
+    - read_sequenced() never returns a valid frame with an artificial timestamp == 0.0
+    """
+    import time
+    from vision_tracker import ThreadedCamera
+
+    # Non-existent device ID 999 triggers synthetic simulation mode deterministically
+    cam = ThreadedCamera(src=999, width=640, height=480)
+    t_before = time.perf_counter()
+    cam.start()
+    try:
+        ret, frame, frame_id, timestamp = cam.read_sequenced()
+        assert ret is True
+        assert frame is not None
+        assert frame_id >= 1
+        assert timestamp >= t_before
+        assert cam.frame_id >= 1
+        assert cam.frame_timestamp >= t_before
+        assert cam._current_frame_id == frame_id
+        assert cam._current_timestamp == timestamp
+        assert timestamp != 0.0
+    finally:
+        cam.stop()
+

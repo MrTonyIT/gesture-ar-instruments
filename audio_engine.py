@@ -7,7 +7,7 @@ Key Features:
 - Persistent background non-blocking output stream via sounddevice.OutputStream
   (44100 Hz, stereo 2-channels, float32, blocksize 256; ~5.8 ms block duration at 44.1 kHz; actual device/output latency is hardware and driver dependent).
 - Active Voice Manager with thread-safe polyphony and automatic voice retirement.
-- Additive Synthesis Piano Voice with exponential ADSR envelope.
+- Additive Synthesis Piano Voice with exponential Attack-Decay (AD) percussive envelope.
 - Plucked String Synthesis Guitar Voice via damped harmonic spectrum and chord offsets.
 - Soft-clipping master bus using np.tanh to prevent digital saturation.
 - Pure procedural generation: zero external audio files (.wav/.mp3).

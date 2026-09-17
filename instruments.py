@@ -657,19 +657,25 @@ class Guitar:
 
     def _load_or_create_sprite(self) -> np.ndarray:
         """Loads assets/guitar_blocky.png or generates procedural fallback."""
-        if os.path.isfile(self.asset_path):
-            img = cv2.imread(self.asset_path, cv2.IMREAD_UNCHANGED)
-            if img is not None and len(img.shape) == 3 and img.shape[2] == 4:
-                logger.info("Loaded blocky guitar asset from %s (%s)", self.asset_path, img.shape)
-                return img
+        candidates = [
+            self.asset_path,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), self.asset_path),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if img is not None and len(img.shape) == 3 and img.shape[2] == 4:
+                    logger.info("Loaded blocky guitar asset from %s (%s)", path, img.shape)
+                    return img
 
-        logger.warning("Guitar asset not found at %s. Generating procedural low-poly fallback.", self.asset_path)
+        logger.info("Guitar asset not found at %s. Generating procedural low-poly fallback.", self.asset_path)
         img = create_procedural_blocky_guitar(960, 360)
-        # Try saving for future fast loads
+        # Try saving for future fast loads if running inside repository
         try:
-            os.makedirs(os.path.dirname(self.asset_path) or ".", exist_ok=True)
-            cv2.imwrite(self.asset_path, img)
-            logger.info("Saved procedural guitar asset to %s", self.asset_path)
+            if os.path.dirname(self.asset_path):
+                os.makedirs(os.path.dirname(self.asset_path), exist_ok=True)
+                cv2.imwrite(self.asset_path, img)
+                logger.info("Saved procedural guitar asset to %s", self.asset_path)
         except Exception as e:
             logger.debug("Could not write asset cache: %s", e)
         return img

@@ -16,9 +16,9 @@ Key Updates & Ergonomic Design:
        * Left Hand Fretboard: Mid-left chest level (X: 0.15 to 0.40, Y: 0.45 to 0.65).
        * Right Hand Strum Box: Lower-right lap/desk level (X: 0.55 to 0.85, Y: 0.65 to 0.85).
 
-3. Global Reset:
-   - Raising both wrists (Landmark 0) into upper 10% screen height flushes instruments
-     and reverts to IDLE immediately.
+3. Global Reset & Exit Controls:
+   - Hold the on-screen [RESET] button for 0.7s (or press 'r') to revert to IDLE.
+   - Hold the on-screen [EXIT] button for 3.0s (or press 'q' / ESC) to cleanly shut down.
 """
 
 from __future__ import annotations

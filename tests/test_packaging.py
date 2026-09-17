@@ -78,3 +78,14 @@ def test_installed_package_metadata():
         assert dist.version == "1.0.0"
         entry_points = [ep.name for ep in dist.entry_points if ep.group == "console_scripts"]
         assert "gesture-ar" in entry_points, "Entry point gesture-ar must be registered"
+
+
+def test_pyproject_python_version_support():
+    """Verifies pyproject.toml aligns on supported Python versions: >=3.10,<3.12."""
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject_path = repo_root / "pyproject.toml"
+    text = pyproject_path.read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.10,<3.12"' in text
+    assert '"Programming Language :: Python :: 3.10"' in text
+    assert '"Programming Language :: Python :: 3.11"' in text
+

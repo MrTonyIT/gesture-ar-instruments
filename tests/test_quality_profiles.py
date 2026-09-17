@@ -48,7 +48,7 @@ def test_quality_profiles_definitions():
 
 def test_app_quality_profile_switching():
     """Verifies that set_quality_profile switches config and synchronizes tracker model complexity."""
-    app = GestureARApp(start_threads=False, quality_profile="HIGH")
+    app = GestureARApp(start_threads=False, quality_profile="HIGH", init_mediapipe=False)
     try:
         assert app.quality_profile == "HIGH"
         assert app.quality_config.max_particles == 18
@@ -75,7 +75,7 @@ def test_app_quality_profile_switching():
 
 def test_rendering_effects_under_profiles():
     """Verifies that drawing shockwave and oscilloscope executes cleanly across profiles."""
-    app = GestureARApp(start_threads=False, quality_profile="HIGH")
+    app = GestureARApp(start_threads=False, quality_profile="HIGH", init_mediapipe=False)
     try:
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
 

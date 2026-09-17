@@ -130,9 +130,21 @@ class ThreadedCamera:
             self.is_simulation = True
             self.ret = True
             self.frame = self._generate_simulation_frame()
+        now = time.perf_counter()
+        with self._lock:
+            if self.ret and self.frame is not None:
+                self.frame_id = 1
+                self.frame_timestamp = now
+                self._current_frame_id = 1
+                self._current_timestamp = now
+            else:
+                self.frame_id = 0
+                self.frame_timestamp = 0.0
+                self._current_frame_id = 0
+                self._current_timestamp = 0.0
 
         self.is_running = True
-        self._last_fps_calc = time.perf_counter()
+        self._last_fps_calc = now
         self._thread = threading.Thread(target=self._capture_loop, daemon=True, name="ThreadedCameraWorker")
         self._thread.start()
         return self
@@ -237,7 +249,7 @@ class ThreadedCamera:
     def read_sequenced(self) -> Tuple[bool, Optional[np.ndarray], int, float]:
         """Returns (ret, frame, frame_id, timestamp) for sequenced stale-frame skipping."""
         with self._lock:
-            if self.frame is not None:
+            if self.ret and self.frame is not None and self._current_timestamp > 0.0:
                 return self.ret, self.frame, self._current_frame_id, self._current_timestamp
             return False, None, 0, 0.0
 
@@ -465,6 +477,7 @@ class HandTracker:
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",  # "one_euro", "deadband", "ema", "raw"
         model_complexity: int = 1,      # 1 = Full (Ultra precision), 0 = Lite (Hyper speed)
+        init_mediapipe: bool = True,
     ) -> None:
         self.max_num_hands = max_num_hands
         self.min_detection_confidence = min_detection_confidence
@@ -472,6 +485,7 @@ class HandTracker:
         self.ema_alpha = ema_alpha
         self.filter_mode = filter_mode
         self.model_complexity = model_complexity
+        self.init_mediapipe = init_mediapipe
 
         # Unified filter instances per hand label ('Left', 'Right')
         self._filters: Dict[str, BaseFilter] = {}
@@ -483,7 +497,9 @@ class HandTracker:
         self.mp_hands = None
         self.hands = None
 
-        if mp is not None and hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'):
+        if not self.init_mediapipe:
+            logger.info("MediaPipe graph initialization skipped (init_mediapipe=False).")
+        elif mp is not None and hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'):
             self.mp_hands = mp.solutions.hands
             self._init_mp_hands()
         else:
@@ -528,7 +544,7 @@ class HandTracker:
         if complexity not in (0, 1) or complexity == self.model_complexity:
             return
         self.model_complexity = complexity
-        if self.mp_hands is not None:
+        if getattr(self, "init_mediapipe", True) and self.mp_hands is not None:
             self._init_mp_hands()
 
     def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
@@ -683,6 +699,7 @@ class AsyncHandTracker:
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",
         model_complexity: int = 1,
+        init_mediapipe: bool = True,
     ) -> None:
         self.camera = camera
         self.tracker = HandTracker(
@@ -692,6 +709,7 @@ class AsyncHandTracker:
             ema_alpha=ema_alpha,
             filter_mode=filter_mode,
             model_complexity=model_complexity,
+            init_mediapipe=init_mediapipe,
         )
         self._config_lock = threading.Lock()
         self._snapshot_lock = threading.Lock()
