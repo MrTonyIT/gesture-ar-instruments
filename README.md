@@ -54,8 +54,8 @@ All tracking algorithms, geometry primitives, audio synthesis voices, and gestur
 
 ### 🎛️ 4. Pluggable Tracking Filter Hierarchy
 Choose between four filtering strategies in `vision_tracker.py`:
-- **`one_euro` (Default)**: Casiez et al. (CHI 2012) adaptive cutoff filter ($f_{c,\min} = 1.0\text{ Hz}, \beta = 30.0$). Operates in Normalized Device Coordinates (NDC) to eliminate stationary jitter ($1.77\text{ px}$ vs $5.90\text{ px}$ raw at 1080p) while adapting cutoff dynamically during rapid motion with $<1\text{ frame}$ ($7.8\text{ ms}$) phase lag.
-- **`deadband`**: Dual-threshold velocity-adaptive deadband ($\delta_{\text{static}} = 0.003, \delta_{\text{dynamic}} = 0.012$) with instantaneous step response ($0.0\text{ ms}$ delay relative to step frame).
+- **`one_euro` (Default)**: Casiez et al. (CHI 2012) adaptive cutoff filter ($f_{c,\min} = 1.0\text{ Hz}, \beta = 30.0$). Operates in Normalized Device Coordinates (NDC) to attenuate stationary jitter ($1.77\text{ px}$ vs $5.90\text{ px}$ raw at 1080p) while reducing the smoothness/responsiveness trade-off by increasing cutoff during faster motion (sub-frame $7.8\text{ ms}$ phase lag measured in synthetic benchmark).
+- **`deadband`**: Dual-threshold velocity-adaptive deadband ($\delta_{\text{static}} = 0.0025, \delta_{\text{dynamic}} = 0.0080$) with instantaneous step response ($0.0\text{ ms}$ delay relative to step frame).
 - **`ema`**: First-order exponential moving average ($\alpha = 0.65$).
 - **`raw`**: Unfiltered camera pass-through for latency baseline comparisons.
 
@@ -83,10 +83,10 @@ All figures below are directly computed from synthetic deterministic test trajec
 | | EMAFilter | 0.01035 | 0.00192 | N/A | 16.03 px | N/A | 0 | 50.0 ms |
 | | **DeadbandFilter** | **0.00087** | **0.00079** | N/A | **0.16 px** | N/A | 0 | **0.0 ms** |
 | | OneEuroFilter | 0.00440 | 0.00085 | N/A | 7.84 px | N/A | 0 | 33.3 ms |
-| **Rapid Strum 4.0Hz (3s)** | RawFilter | 0.00204 | 0.00164 | N/A | 3.85 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
-| | EMAFilter | 0.02188 | 0.01968 | N/A | 12.76 px | 8.1 ms | 0 (< 16.7 ms) | N/A |
-| | DeadbandFilter | 0.00217 | 0.00172 | N/A | 4.21 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
-| | OneEuroFilter | 0.02640 | 0.02014 | N/A | 23.28 px | 9.3 ms | 1 (16.7 ms) | N/A |
+| **Rapid Strum 4.0Hz (3s)** | RawFilter | 0.00204 | 0.00164 | N/A | 2.17 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
+| | EMAFilter | 0.02188 | 0.01968 | N/A | 7.18 px | 8.1 ms | 0 (< 16.7 ms) | N/A |
+| | DeadbandFilter | 0.00217 | 0.00172 | N/A | 2.37 px | 0.0 ms | 0 (< 16.7 ms) | N/A |
+| | OneEuroFilter | 0.02640 | 0.02014 | N/A | 13.10 px | 9.3 ms | 1 (16.7 ms) | N/A |
 
 > [!NOTE]
 > Phase lag is evaluated via continuous Fourier harmonic analysis. Discrete cross-correlation at 60 FPS has an integer quantization resolution of $\pm 8.3\text{ ms}$; a measurement of 0 detected frames bounds delay to $< 16.7\text{ ms}$ (sub-frame). Settling latency is measured relative to the discrete step event frame ($\Delta t = 16.7\text{ ms}$ resolution). Detailed derivations and analysis are documented in [`docs/RESEARCH.md`](docs/RESEARCH.md).
@@ -147,7 +147,7 @@ pip install -r requirements.txt
 # Install development and test tooling
 pip install -r requirements-dev.txt
 
-# (Recommended for Research / CI Reproduction) Install with verified constraints:
+# (Recommended for CI / Research Reproduction) Install with CI-verified direct dependency constraints:
 # pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 ```
 
@@ -224,7 +224,7 @@ gesture-ar-instruments/
 ├── main.py                      # Application orchestrator, ThreadedCamera & Diagnostics HUD
 ├── vision_tracker.py            # MediaPipe Hands with pluggable BaseFilter hierarchy
 ├── pyproject.toml               # PEP 517/621 project configuration & tool configs
-├── constraints.txt              # Exact verified dependency constraints for CI & research reproduction
+├── constraints.txt              # CI-verified direct dependency constraints for reproduction
 ├── requirements.txt             # Core runtime dependencies (flexible declarations)
 ├── requirements-dev.txt         # Development & test tooling (pytest, ruff)
 ├── LICENSE                      # MIT Open Source License

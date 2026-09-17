@@ -363,8 +363,9 @@ class OneEuroFilter(BaseFilter):
     Parameters:
     - min_cutoff: Minimum cutoff frequency in Hz (default: 1.0 Hz). Controls jitter attenuation at rest.
     - beta: Speed coefficient (default: 30.0 for Normalized Device Coordinates [0, 1]).
-      Scales cutoff frequency proportionally to normalized tracking speed to eliminate phase lag during motion.
-      Note: beta=30.0 in NDC corresponds to dynamic scaling up to ~60 Hz during rapid strokes.
+      Reduces the smoothness/responsiveness trade-off by increasing cutoff frequency proportionally
+      to tracking speed during faster motion. Typical rapid motions may drive the adaptive cutoff
+      into the tens-of-Hz range, but the implementation has no configured upper cutoff unless max_cutoff is provided.
     - d_cutoff: Cutoff frequency for derivative filtering in Hz (default: 1.0 Hz).
     - max_cutoff: Optional upper bound on cutoff frequency in Hz (default: None, unbounded).
     - dt: Clamped to [1e-4 s, 1.0 s] for numerical stability against timing spikes.

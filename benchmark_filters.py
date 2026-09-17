@@ -31,6 +31,9 @@ import numpy as np
 
 from vision_tracker import BaseFilter, DeadbandFilter, EMAFilter, OneEuroFilter, RawFilter
 
+REFERENCE_WIDTH = 1920.0
+REFERENCE_HEIGHT = 1080.0
+
 
 def generate_stationary_noisy(
     duration: float = 3.0,
@@ -224,16 +227,19 @@ def compute_metrics(
     max_err = float(np.max(np.abs(errors)))
     rmse = float(np.sqrt(np.mean(errors ** 2)))
 
+    # Select axis-appropriate reference pixel scale (X=1920, Y=1080)
+    pixel_scale = REFERENCE_HEIGHT if eval_axis == 1 else REFERENCE_WIDTH
+
     # Residual noise RMS: high-frequency error variation with true motion subtracted
     # Delta e_i = e_i - e_{i-1}. Standard error std = RMS(Delta e) / sqrt(2)
     diff_errors = np.diff(errors)
     residual_noise_rms = float(np.sqrt(np.mean(diff_errors ** 2)) / np.sqrt(2.0))
-    residual_noise_px = float(residual_noise_rms * 1920.0)
+    residual_noise_px = float(residual_noise_rms * pixel_scale)
 
     # Stationary jitter: only defined for static hand tracking
     if is_stationary:
         stationary_jitter_rms = float(np.std(filt))
-        stationary_jitter_px = float(stationary_jitter_rms * 1920.0)
+        stationary_jitter_px = float(stationary_jitter_rms * pixel_scale)
     else:
         stationary_jitter_rms = -1.0
         stationary_jitter_px = -1.0

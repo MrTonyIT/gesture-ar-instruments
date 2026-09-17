@@ -1,9 +1,9 @@
 # =============================================================================
-# Reproducible Dependency Constraints (Python 3.10 & 3.11)
+# CI-Verified Direct Dependency Constraints (Python 3.10 & 3.11)
 # =============================================================================
-# These exact direct dependency versions are verified to pass all 52 headless
-# unit tests, lint checks, and empirical benchmark suites in GitHub Actions CI
-# (Ubuntu 24.04 runner) and Windows desktop environments.
+# Verified direct dependency versions used by the GitHub Actions test
+# environment (Ubuntu 24.04 runner) to pass all unit tests, lint checks,
+# and empirical benchmark suites.
 #
 # Usage:
 #   pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt

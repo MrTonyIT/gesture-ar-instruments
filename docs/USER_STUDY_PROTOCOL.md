@@ -21,9 +21,8 @@ This protocol defines a rigorous, reproducible evaluation procedure to assess th
 ## 2. Participant Cohort & Apparatus
 
 ### 2.1 Demographics
-* **Sample Size:** Proposed target cohort of $N = 24$ participants (12 novices, 12 experienced musicians).
-  - An *a-priori* power analysis conducted via G*Power for a repeated-measures within-subjects design ($4 \text{ Filter} \times 2 \text{ Posture}$ conditions), assuming a medium effect size (Cohen's $f = 0.25$, $\eta_p^2 = 0.06$), within-subject correlation $\rho = 0.50$, and non-sphericity correction $\epsilon = 1.0$ at $\alpha = 0.05$, yields a statistical power of $1 - \beta \approx 0.86$.
-  - If a smaller effect size ($f = 0.15$) is anticipated during pilot testing, $N$ must be expanded accordingly prior to trial commencement.
+* **Sample Size:** A target cohort of $N = 24$ participants (12 novices, 12 experienced musicians) is proposed for initial study planning. Before participant recruitment, a formal *a-priori* power analysis must be verified using the final statistical model, expected effect size, within-subject correlation, multiplicity strategy, and pilot variance estimates.
+  - *Illustrative planning scenario:* In a repeated-measures within-subjects design ($4 \text{ Filter} \times 2 \text{ Posture}$ conditions), an assumed medium effect size (Cohen's $f = 0.25$, $\eta_p^2 = 0.06$) with moderate within-subject correlation ($\rho = 0.50$) at $\alpha = 0.05$ typically suggests $N \ge 24$ for conventional target power ($1 - \beta \ge 0.80$). If pilot testing indicates smaller effect sizes ($f < 0.20$), $N$ must be adjusted upward prior to formal recruitment.
 * **Stratification:**
   * Group A (Novices, $n = 12$): No prior guitar or piano performance experience.
   * Group B (Musicians, $n = 12$): $\ge 2$ years active instrumental practice.
