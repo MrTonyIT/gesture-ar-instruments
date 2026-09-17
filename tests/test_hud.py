@@ -215,3 +215,61 @@ def test_key_dispatch_and_lowercase_r_no_diagnostics_collision(app):
         assert act == expected_action, f"Key {k} yielded {act}, expected {expected_action}"
 
 
+def test_x11_and_windows_special_keys_no_collision(app):
+    """
+    Verifies that backend-specific non-ASCII full key codes (X11 keysyms and Windows
+    extended keys) do NOT alias to ordinary ASCII application controls via low-byte masking.
+    Also verifies intended X11 special keys (Escape 0xFF1B, Tab 0xFF09, F3 65472).
+    """
+    from instruments import Guitar
+
+    app.guitar = Guitar(zones=None, audio_engine=app.audio_engine)
+    app.guitar.set_chord("E")
+    app.quality_profile = "HIGH"
+    app.show_diagnostics = False
+
+    # 1. Linux / X11 keysyms that previously collided when masked with & 0xFF
+    x11_keys_to_test = {
+        65361: "Left Arrow",
+        65362: "Up Arrow",
+        65363: "Right Arrow",
+        65364: "Down Arrow",
+        0xFF50: "Home (low byte 0x50 == 'P')",
+        0xFF56: "PageDown (low byte 0x56 == 'V')",
+        0xFF63: "Insert (low byte 0x63 == 'c')",
+        0xFF66: "Redo (low byte 0x66 == 'f')",
+    }
+    for key_code, desc in x11_keys_to_test.items():
+        act = app.handle_key(key_code)
+        assert act is None, f"X11 key {desc} (code {key_code}) caused unintended action: {act}"
+        assert app.dispatch_key(key_code) is True, f"X11 key {desc} incorrectly caused exit"
+
+    # Verify no side-effects from the above suppressed keys
+    assert app.guitar.active_chord == "E", "Insert or Redo incorrectly mutated guitar chord"
+    assert app.quality_profile == "HIGH", "PageDown incorrectly mutated quality profile"
+    assert app.show_diagnostics is False, "Extended key toggled diagnostics"
+
+    # 2. Windows extended arrow keys
+    win_extended_keys = [2424832, 2490368, 2555904, 2621440]
+    for key_code in win_extended_keys:
+        act = app.handle_key(key_code)
+        assert act is None, f"Windows extended key {key_code} caused unintended action: {act}"
+        assert app.dispatch_key(key_code) is True, f"Windows extended key {key_code} caused exit"
+
+    # 3. Intended backend-specific special full key codes
+    # X11 Escape (0xFF1B = 65307)
+    assert app.handle_key(0xFF1B) == "EXIT"
+    assert app.dispatch_key(0xFF1B) is False
+
+    # X11 Tab (0xFF09 = 65289)
+    init_diag = app.show_diagnostics
+    assert app.handle_key(0xFF09) == "DIAGNOSTICS"
+    assert app.show_diagnostics != init_diag
+
+    # X11 F3 (0xFFBE = 65472)
+    diag_state = app.show_diagnostics
+    assert app.handle_key(65472) == "DIAGNOSTICS"
+    assert app.show_diagnostics != diag_state
+
+
+

@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python Version" />
-  <img src="https://img.shields.io/badge/OpenCV-4.8+-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" alt="OpenCV" />
+  <img src="https://img.shields.io/badge/OpenCV-4.10.0.84-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" alt="OpenCV" />
   <img src="https://img.shields.io/badge/MediaPipe-Hands-007ACC?style=for-the-badge&logo=google&logoColor=white" alt="MediaPipe" />
   <img src="https://img.shields.io/badge/Audio-Procedural%20Synth%20(32%20Voices)-00E676?style=for-the-badge&logo=speaker&logoColor=white" alt="Audio Engine" />
   <img src="https://img.shields.io/badge/Tests-Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Pytest" />
@@ -198,14 +198,14 @@ python -m ruff check .
 | **Select Chord** | Keys `1`–`9` or `C, G, D, A, E, F` | Air Guitar | Instant authentic 9-chord switching |
 | **Fingertip Chord**| Raise 1–4 fingers on Left Hand | Air Guitar | 1=`C`, 2=`G`, 3=`Am`, 4=`Em` |
 | **Touch Chord** | Reach into top chord boxes `[1]`–`[9]` | Air Guitar | Direct AR touch selection |
-| **Strum Guitar** | Thumb (4) or Index (8) downward stroke | Air Guitar | Strums 6 projected strings with acoustic resonance |
+| **Strum Guitar** | Thumb (4) or Index (8) string crossing | Air Guitar | Strums 6 projected strings via 2D segment intersection in either stroke direction |
 | **Diagnostics** | `F3`, `Tab`, or `` ` `` | Telemetry HUD | Toggles developer diagnostics panel |
 | **Quality Mode** | `V` key | Application | Cycles `HIGH` $\to$ `BALANCED` $\to$ `LOW` |
 | **Model Complexity** | `M` key | Hand Tracking | Toggles `ULTRA (1)` $\leftrightarrow$ `HYPER-SPEED (0)` |
 | **Tracking Filter** | `K` key | Hand Tracking | Cycles `1-Euro` $\to$ `Deadband` $\to$ `EMA` $\to$ `Raw` |
 | **Camera Settings** | `P` key | Camera | Opens native camera properties dialog (Windows DirectShow only) |
-| **Reset State** | `r` / `R` key | Application | Resets state machine to `IDLE` |
-| **Exit** | `q` / `Q` or `ESC` | Application | Gracefully releases all hardware resources |
+| **Reset State** | Hold `[RESET]` button (0.7s) or `r` / `R` | Application | Resets state machine to `IDLE` |
+| **Exit** | Hold `[EXIT]` button (3.0s) or `q` / `Q` / `ESC` | Application | Gracefully releases all hardware resources |
 
 ---
 

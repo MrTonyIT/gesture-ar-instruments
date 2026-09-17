@@ -18,3 +18,4 @@ sounddevice==0.5.1
 # Development and Testing Tooling
 pytest==8.3.4
 ruff==0.9.9
+pip-audit==2.10.1

@@ -362,3 +362,141 @@ def test_chord_input_source_arbitration_integration(guitar):
         assert guitar.set_chord(target_chord) is True
         assert guitar.active_chord == target_chord
 
+
+def test_simultaneous_gesture_sources_exclusive_priority(guitar):
+    """
+    Validates strict priority arbitration among simultaneous inputs:
+    Priority: 1. Direct Touch > 2. Deliberate Thumb Pinch > 3. Finger-count gesture.
+    Specifically validates cases A, B, C, D, E, F from specification.
+    """
+    from typing import Optional
+
+    shape = (720, 1280, 3)
+    # Prime guitar with shape to build chord boxes
+    guitar.update([], frame_shape=shape, current_time=0.0)
+    bx1, by1, bx2, by2 = guitar.chord_boxes["F"]
+    touch_f_pos = ((bx1 + bx2) / 2.0, (by1 + by2) / 2.0)
+
+    def make_lh_touch_and_pinch(touch_active: bool, pinch_finger: Optional[int]) -> HandData:
+        wrist = np.array([300.0, 400.0], dtype=np.float32)
+        pts_px = np.zeros((21, 3), dtype=np.float32)
+        pts_px[:, :2] = wrist
+
+        # Hand scale reference
+        pts_px[9, :2] = wrist + np.array([0.0, -80.0], dtype=np.float32)
+
+        # MCPs
+        pts_px[6, :2] = wrist + np.array([-30.0, -60.0], dtype=np.float32)
+        pts_px[10, :2] = wrist + np.array([0.0, -60.0], dtype=np.float32)
+        pts_px[14, :2] = wrist + np.array([30.0, -60.0], dtype=np.float32)
+        pts_px[18, :2] = wrist + np.array([60.0, -60.0], dtype=np.float32)
+
+        # Finger tips default folded
+        for tip_id in [8, 12, 16, 20]:
+            pts_px[tip_id, :2] = wrist + np.array([0.0, -20.0], dtype=np.float32)
+
+        # Thumb (4)
+        thumb_pos = np.array([280.0, 320.0], dtype=np.float32)
+        pts_px[4, :2] = thumb_pos
+
+        # Pinch finger (8=C, 12=G) pinched within 10px of thumb
+        if pinch_finger is not None:
+            pts_px[pinch_finger, :2] = thumb_pos + np.array([5.0, 5.0], dtype=np.float32)
+
+        # Pinky (20) touches F chord box if touch_active
+        if touch_active:
+            pts_px[20, :2] = [touch_f_pos[0], touch_f_pos[1]]
+        else:
+            pts_px[20, :2] = wrist + np.array([60.0, -20.0], dtype=np.float32)
+
+        pts_norm = pts_px.copy()
+        pts_norm[:, 0] /= 1280.0
+        pts_norm[:, 1] /= 720.0
+        return HandData(
+            handedness="Left",
+            landmarks_norm=pts_norm,
+            landmarks_px=pts_px,
+            timestamp=0.0,
+        )
+
+    # Reset guitar to initial chord C
+    guitar.set_chord("C")
+    assert guitar.active_chord == "C"
+
+    # Requirement A: Touch chord box F while a pinch resolving to C is simultaneously present
+    # Final chord MUST be F (direct touch has higher priority than pinch).
+    frame_tp = make_lh_touch_and_pinch(touch_active=True, pinch_finger=8)
+    guitar.update([frame_tp], frame_shape=shape, current_time=1.00)
+    assert guitar.active_chord == "F", f"Requirement A failed: expected F, got {guitar.active_chord}"
+
+    # Requirement B: Keep that same touch+pinch combination for another frame -> still F.
+    guitar.update([frame_tp], frame_shape=shape, current_time=1.02)
+    assert guitar.active_chord == "F", f"Requirement B failed: expected F, got {guitar.active_chord}"
+
+    # Requirement C: Release direct touch while the exact same pinch remains held ->
+    # MUST NOT suddenly emit a deferred C event!
+    frame_p_only = make_lh_touch_and_pinch(touch_active=False, pinch_finger=8)
+    guitar.update([frame_p_only], frame_shape=shape, current_time=1.04)
+    assert guitar.active_chord == "F", f"Requirement C failed: release touch caused deferred pinch C; got {guitar.active_chord}"
+
+    # Requirement D: Release and then perform a NEW pinch transition ->
+    # pinch selection may change the chord (pinch to middle finger 12 -> G).
+    frame_no_pinch = make_lh_touch_and_pinch(touch_active=False, pinch_finger=None)
+    guitar.update([frame_no_pinch], frame_shape=shape, current_time=1.06)
+    assert guitar.active_chord == "F"  # Still F
+
+    frame_pinch_g = make_lh_touch_and_pinch(touch_active=False, pinch_finger=12)
+    guitar.update([frame_pinch_g], frame_shape=shape, current_time=1.08)
+    assert guitar.active_chord == "G", f"Requirement D failed: new pinch did not change chord to G; got {guitar.active_chord}"
+
+    # Requirement E: Keyboard F remains persistent under an unchanged finger-count pose
+    from main import GUITAR_KEY_CHORD_MAP
+    assert guitar.set_chord("F") is True
+    assert guitar.active_chord == "F"
+    guitar.update([frame_pinch_g], frame_shape=shape, current_time=1.10)
+    assert guitar.active_chord == "F", f"Requirement E failed: unchanged pose overwrote keyboard F to {guitar.active_chord}"
+
+    # Requirement F: All 9 keyboard chord mappings still work
+    for k in range(ord("1"), ord("9") + 1):
+        target = GUITAR_KEY_CHORD_MAP[k]
+        assert guitar.set_chord(target) is True
+        assert guitar.active_chord == target
+
+
+def test_guitar_asset_cwd_isolation(tmp_path, monkeypatch, mock_audio):
+    """
+    Verifies that default guitar asset loading does not touch or create directories in CWD,
+    cannot be shadowed by an arbitrary CWD asset, and returns a valid BGRA sprite from memory.
+    """
+    import cv2
+    import numpy as np
+    from instruments import Guitar
+
+    # Switch working directory to isolated temp path
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "assets").exists()
+
+    # 1. Launching/constructing Guitar does not create tmp/assets
+    g1 = Guitar(zones=None, audio_engine=mock_audio)
+    assert not (tmp_path / "assets").exists(), "Guitar construction created assets/ in arbitrary CWD!"
+    assert g1.sprite is not None
+    assert g1.sprite.ndim == 3 and g1.sprite.shape[2] == 4
+
+    # 2. Default asset lookup cannot be shadowed by an arbitrary CWD asset
+    cwd_assets = tmp_path / "assets"
+    cwd_assets.mkdir()
+    fake_sprite = np.zeros((32, 32, 4), dtype=np.uint8)
+    cv2.imwrite(str(cwd_assets / "guitar_blocky.png"), fake_sprite)
+    assert (cwd_assets / "guitar_blocky.png").exists()
+
+    g2 = Guitar(zones=None, audio_engine=mock_audio)
+    # The default lookup must NOT have loaded the 32x32 fake sprite from CWD
+    assert g2.sprite.shape[:2] != (32, 32), "Default asset lookup was shadowed by arbitrary CWD asset!"
+
+    # 3. Procedural in-memory fallback generates valid BGRA sprite without writing to disk
+    g3 = Guitar(zones=None, audio_engine=mock_audio, asset_path=str(tmp_path / "nonexistent.png"))
+    assert g3.sprite is not None
+    assert g3.sprite.shape == (360, 960, 4)
+    assert not (tmp_path / "nonexistent.png").exists(), "Procedural fallback wrote to disk unexpectedly!"
+
+

@@ -38,20 +38,36 @@ jobs:
           gesture-ar --help
           python -c "import main; print('Installed location:', main.__file__)"
 
-      - name: Isolated Fresh-Env Install Smoke Test
+      - name: Isolated Fresh-Env Install, External Directory Smoke Test & Vulnerability Audit
         run: |
-          python -m venv fresh-env
-          ./fresh-env/bin/python -m pip install --upgrade pip
-          ./fresh-env/bin/pip install .
-          ./fresh-env/bin/python -m pip check
-          ./fresh-env/bin/gesture-ar --help
-          ./fresh-env/bin/python -c "import main, vision_tracker, gesture_engine, instruments, audio_engine; print('Fresh environment import success!')"
-          ./fresh-env/bin/python -c "import mediapipe as mp; assert hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'), 'Missing mp.solutions.hands'; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.hands is not None, 'MediaPipe Hands graph failed to initialize'; tracker.close(); print('MediaPipe Hands graph initialized and closed cleanly!')"
+          RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
+          VENV_DIR="$RUNNER_TEMP/gesture-ar-fresh-env"
+          WORK_DIR="$RUNNER_TEMP/gesture-ar-external-workdir"
+          REPO_ROOT="$(pwd)"
+
+          rm -rf "$VENV_DIR" "$WORK_DIR"
+          python -m venv "$VENV_DIR"
+
+          "$VENV_DIR/bin/python" -m pip install --upgrade pip
+          "$VENV_DIR/bin/pip" install .
+          "$VENV_DIR/bin/python" -m pip check
+
+          # PyPA Dependency Vulnerability Audit Gate
+          "$VENV_DIR/bin/pip" install pip-audit==2.10.1
+          "$VENV_DIR/bin/python" -m pip_audit
+
+          mkdir -p "$WORK_DIR"
+          cd "$WORK_DIR"
+
+          "$VENV_DIR/bin/gesture-ar" --help
+
+          "$VENV_DIR/bin/python" -c "import os, main; print('Resolved main.__file__:', main.__file__); mf = os.path.abspath(main.__file__); assert 'site-packages' in mf, f'Not in site-packages: {mf}'; assert not mf.startswith('$REPO_ROOT'), f'Inside repo checkout: {mf}'; assert mf.startswith('$VENV_DIR'), f'Not inside venv: {mf}'; print('Linux package resolution assertion passed: imported strictly from isolated site-packages!')"
+          "$VENV_DIR/bin/python" -c "import mediapipe as mp; assert hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'), 'Missing mp.solutions.hands legacy API'; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.hands is not None, 'MediaPipe Hands graph failed to initialize'; tracker.close(); print('Linux MediaPipe Hands graph initialized and closed cleanly in fresh env!')"
 
       - name: Syntax and Bytecode Compilation
         run: |
           python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
-          python -m compileall .
+          python -m compileall audio_engine.py benchmark_filters.py gesture_engine.py instruments.py main.py vision_tracker.py tests
 
       - name: Code Quality & Linting
         run: |
@@ -95,7 +111,7 @@ jobs:
       - name: Syntax and Bytecode Compilation
         run: |
           python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
-          python -m compileall .
+          python -m compileall audio_engine.py benchmark_filters.py gesture_engine.py instruments.py main.py vision_tracker.py tests
 
       - name: Code Quality & Linting
         run: |
@@ -145,6 +161,10 @@ jobs:
 
           # 3. Verify dependency tree integrity
           Invoke-Native { & $venvPython -m pip check }
+
+          # 3b. Real Dependency Vulnerability Audit Gate
+          Invoke-Native { & $venvPip install pip-audit==2.10.1 }
+          Invoke-Native { & $venvPython -m pip_audit }
 
           # 4. Change working directory to a separate temporary directory outside repo and venv
           $workDir = Join-Path $runnerTemp "gesture-ar-external-workdir"

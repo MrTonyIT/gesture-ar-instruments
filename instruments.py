@@ -624,7 +624,7 @@ class Guitar:
         self,
         zones: Optional[Dict[str, Tuple[int, int, int, int]]],
         audio_engine: AudioEngine,
-        asset_path: str = "assets/guitar_blocky.png",
+        asset_path: Optional[str] = None,
     ) -> None:
         self.audio_engine = audio_engine
         self.asset_path = asset_path
@@ -665,29 +665,32 @@ class Guitar:
         self.strum_tip_ids: List[int] = [4, 8]
 
     def _load_or_create_sprite(self) -> np.ndarray:
-        """Loads assets/guitar_blocky.png or generates procedural fallback."""
-        candidates = [
-            self.asset_path,
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), self.asset_path),
-        ]
-        for path in candidates:
-            if os.path.isfile(path):
-                img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-                if img is not None and len(img.shape) == 3 and img.shape[2] == 4:
-                    logger.info("Loaded blocky guitar asset from %s (%s)", path, img.shape)
+        """
+        Loads bundled guitar sprite or generates procedural fallback in memory.
+        Does NOT trust arbitrary CWD or create ./assets/ on disk.
+        """
+        # 1. If an explicit custom path was supplied, attempt to load it
+        if self.asset_path is not None and self.asset_path != "assets/guitar_blocky.png":
+            if os.path.isfile(self.asset_path):
+                img = cv2.imread(self.asset_path, cv2.IMREAD_UNCHANGED)
+                if img is not None and img.ndim == 3 and img.shape[2] == 4:
+                    logger.info("Loaded custom guitar asset from %s (%s)", self.asset_path, img.shape)
                     return img
+            logger.info("Custom guitar asset not found at %s; using in-memory fallback.", self.asset_path)
+            return create_procedural_blocky_guitar(960, 360)
 
-        logger.info("Guitar asset not found at %s. Generating procedural low-poly fallback.", self.asset_path)
-        img = create_procedural_blocky_guitar(960, 360)
-        # Try saving for future fast loads if running inside repository
-        try:
-            if os.path.dirname(self.asset_path):
-                os.makedirs(os.path.dirname(self.asset_path), exist_ok=True)
-                cv2.imwrite(self.asset_path, img)
-                logger.info("Saved procedural guitar asset to %s", self.asset_path)
-        except Exception as e:
-            logger.debug("Could not write asset cache: %s", e)
-        return img
+        # 2. For default asset, resolve relative to module directory first
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        bundled_path = os.path.join(module_dir, "assets", "guitar_blocky.png")
+        if os.path.isfile(bundled_path):
+            img = cv2.imread(bundled_path, cv2.IMREAD_UNCHANGED)
+            if img is not None and img.ndim == 3 and img.shape[2] == 4:
+                logger.info("Loaded bundled guitar asset from %s (%s)", bundled_path, img.shape)
+                return img
+
+        # 3. Procedural fallback generated purely in memory (never writes to CWD or creates directories)
+        logger.info("Bundled guitar asset not found; generating procedural in-memory fallback.")
+        return create_procedural_blocky_guitar(960, 360)
 
     def _setup_local_strings(self) -> None:
         """
@@ -901,49 +904,47 @@ class Guitar:
                 if touched_chord is not None:
                     break
 
-            # Prioritized Chord Resolution (EVENT-BASED):
-            # 1. Direct Touch on top chord boxes: deliberate selection event
+            # EXCLUSIVE PRIORITY ARBITRATION:
+            # Priority 1: Direct chord-box touch
+            # Priority 2: Deliberate thumb pinch
+            # Priority 3: Finger-count gesture (considered only when neither higher-priority source is active)
             if touched_chord is not None:
+                # Direct touch is active (highest priority)
                 if touched_chord != self._prev_touched_chord:
                     self.set_chord(touched_chord)
-                self._prev_touched_chord = touched_chord
-            else:
-                self._prev_touched_chord = None
-
-            # 2. Deliberate Thumb Pinch: deliberate selection event
-            if pinched_chord is not None:
+            elif pinched_chord is not None:
+                # Direct touch not active; pinch is active (second priority)
                 if pinched_chord != self._prev_pinched_chord:
                     self.set_chord(pinched_chord)
-                self._prev_pinched_chord = pinched_chord
             else:
-                self._prev_pinched_chord = None
+                # Neither direct touch nor pinch is active; finger-count is considered
+                if self._prev_lh_finger_count is None:
+                    # Initial tracking acquisition
+                    if finger_count == 1:
+                        self.set_chord("C")
+                    elif finger_count == 2:
+                        self.set_chord("G")
+                    elif finger_count == 3:
+                        self.set_chord("Am")
+                    elif finger_count >= 4:
+                        self.set_chord("Em")
+                elif finger_count != self._prev_lh_finger_count:
+                    # Finger-count gesture transitioned to a new count
+                    if finger_count == 1:
+                        self.set_chord("C")
+                    elif finger_count == 2:
+                        self.set_chord("G")
+                    elif finger_count == 3:
+                        self.set_chord("Am")
+                    elif finger_count >= 4:
+                        self.set_chord("Em")
 
-            # 3. Finger Count Chord Selection: occurs when finger-count gesture CHANGES, not every frame
-            if self._prev_lh_finger_count is None:
-                # Initial tracking acquisition
-                if touched_chord is None and pinched_chord is None:
-                    if finger_count == 1:
-                        self.set_chord("C")
-                    elif finger_count == 2:
-                        self.set_chord("G")
-                    elif finger_count == 3:
-                        self.set_chord("Am")
-                    elif finger_count >= 4:
-                        self.set_chord("Em")
-                self._prev_lh_finger_count = finger_count
-            elif finger_count != self._prev_lh_finger_count:
-                # Finger-count gesture transitioned to a new count
-                if touched_chord is None and pinched_chord is None:
-                    if finger_count == 1:
-                        self.set_chord("C")
-                    elif finger_count == 2:
-                        self.set_chord("G")
-                    elif finger_count == 3:
-                        self.set_chord("Am")
-                    elif finger_count >= 4:
-                        self.set_chord("Em")
-                self._prev_lh_finger_count = finger_count
-            # else: finger_count is unchanged; an unchanged left-hand pose does not overwrite keyboard or touch selections
+            # Update all previous gesture-source states every frame,
+            # even when suppressed by a higher-priority input, so that releasing a high-priority input
+            # does NOT cause a stale/deferred lower-priority transition event!
+            self._prev_touched_chord = touched_chord
+            self._prev_pinched_chord = pinched_chord
+            self._prev_lh_finger_count = finger_count
         else:
             self.lh_landmarks = None
             self.lh_finger_count = 0

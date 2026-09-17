@@ -647,22 +647,31 @@ class HandTracker:
         self._prev_fingertip_px.clear()
         self._prev_wrist_px.clear()
 
-    def set_filter_mode(self, mode: str) -> None:
-        """Dynamically switches filter mode and resets existing filter and temporal states."""
-        if mode == self.filter_mode:
-            return
-        self.filter_mode = mode
+    def set_filter_mode(self, mode: str) -> bool:
+        """
+        Dynamically switches filter mode and resets existing filter and temporal states.
+        Returns True if the filter mode actually changed, False if it was a no-op.
+        """
+        norm_mode = str(mode).strip().lower()
+        if norm_mode == self.filter_mode.strip().lower():
+            return False
+        self.filter_mode = norm_mode
         self.reset_temporal_state()
-        logger.info("HandTracker filter mode switched to: %s", mode)
+        logger.info("HandTracker filter mode switched to: %s", norm_mode)
+        return True
 
-    def set_model_complexity(self, complexity: int) -> None:
-        """Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full)."""
+    def set_model_complexity(self, complexity: int) -> bool:
+        """
+        Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full).
+        Returns True if the complexity actually changed, False if it was a no-op.
+        """
         if complexity not in (0, 1) or complexity == self.model_complexity:
-            return
+            return False
         self.model_complexity = complexity
         if getattr(self, "init_mediapipe", True) and self.mp_hands is not None:
             self._init_mp_hands()
         self.reset_temporal_state()
+        return True
 
     def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """
@@ -804,7 +813,7 @@ class AsyncHandTracker:
     - Runs MediaPipe inference on a dedicated background CPU worker thread.
     - Thread-safe mutex-synchronized double-buffered snapshot with timestamping.
     - Stale-frame skipping: skips re-inferring on unchanged camera frames.
-    - Predictive Kinematic Dead-Reckoning to ensure 60-120 FPS render loops.
+    - Predictive Kinematic Dead-Reckoning that decouples inference from render-loop throughput.
     """
 
     def __init__(
@@ -864,11 +873,18 @@ class AsyncHandTracker:
     def filter_mode(self, mode: str) -> None:
         self.set_filter_mode(mode)
 
-    def set_filter_mode(self, mode: str) -> None:
+    def set_filter_mode(self, mode: str) -> bool:
+        """
+        Dynamically switches filter mode.
+        Returns True and clears snapshot if filter mode actually changed,
+        or False and preserves snapshot if no-op.
+        """
         with self._config_lock:
-            self.tracker.set_filter_mode(mode)
-        with self._snapshot_lock:
-            self._latest_hands = []
+            changed = self.tracker.set_filter_mode(mode)
+        if changed:
+            with self._snapshot_lock:
+                self._latest_hands = []
+        return changed
 
     @property
     def model_complexity(self) -> int:
@@ -879,12 +895,18 @@ class AsyncHandTracker:
     def model_complexity(self, complexity: int) -> None:
         self.set_model_complexity(complexity)
 
-    def set_model_complexity(self, complexity: int) -> None:
-        """Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full)."""
+    def set_model_complexity(self, complexity: int) -> bool:
+        """
+        Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full).
+        Returns True and clears snapshot if complexity actually changed,
+        or False and preserves snapshot if no-op.
+        """
         with self._config_lock:
-            self.tracker.set_model_complexity(complexity)
-        with self._snapshot_lock:
-            self._latest_hands = []
+            changed = self.tracker.set_model_complexity(complexity)
+        if changed:
+            with self._snapshot_lock:
+                self._latest_hands = []
+        return changed
 
     def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """Direct synchronous process fallback."""
@@ -927,7 +949,7 @@ class AsyncHandTracker:
                 hands = self.tracker.process(frame, timestamp=frame_ts)
             t_after = time.perf_counter()
 
-            # Publish result to snapshot lock in microseconds
+            # Publishes the result under a short snapshot lock
             with self._snapshot_lock:
                 self._latest_hands = hands
                 self._latest_timestamp = t_after

@@ -829,3 +829,99 @@ def test_temporal_state_reset_and_motion_collision():
     guitar.update(res_post_filter, frame_shape=(720, 1280, 3), current_time=1.10)
     assert len(mock_audio.strums) == 0, "False guitar strum was generated on filter switch!"
 
+
+def test_noop_config_set_preserves_snapshot_and_state():
+    """
+    Validates that no-op configuration sets do not clear latest snapshot or reset state,
+    while actual pipeline transitions execute clean resets.
+    Covers:
+    1. model complexity 0 -> 0 preserves _latest_hands and returns False;
+    2. current filter mode -> current filter mode preserves _latest_hands and returns False;
+    3. actual complexity switch returns True and clears _latest_hands;
+    4. actual filter switch returns True and clears _latest_hands;
+    5. BALANCED -> LOW in GestureARApp preserves tracking snapshot;
+    6. HIGH -> BALANCED performs intentional transition/reset.
+    """
+    import numpy as np
+    from vision_tracker import AsyncHandTracker, HandData, ThreadedCamera
+    from main import GestureARApp
+
+    cam = ThreadedCamera(0)
+    async_tracker = AsyncHandTracker(camera=cam, init_mediapipe=False)
+    dummy_hand = HandData(
+        handedness="Right",
+        landmarks_norm=np.zeros((21, 3), dtype=np.float32),
+        landmarks_px=np.zeros((21, 3), dtype=np.float32),
+        timestamp=1.0,
+    )
+
+    # Populate snapshot with dummy hand
+    with async_tracker._snapshot_lock:
+        async_tracker._latest_hands = [dummy_hand]
+    assert len(async_tracker._latest_hands) == 1
+
+    # Ensure baseline state: model_complexity = 0, filter_mode = 'one_euro'
+    async_tracker.tracker.model_complexity = 0
+    async_tracker.tracker.filter_mode = "one_euro"
+
+    # 1. Assigning model complexity 0 while already 0 returns False and preserves _latest_hands
+    changed_mc = async_tracker.set_model_complexity(0)
+    assert changed_mc is False, "No-op complexity set returned True"
+    assert len(async_tracker._latest_hands) == 1, "No-op complexity set cleared _latest_hands!"
+
+    # 2. Assigning current filter mode ('one_euro') returns False and preserves _latest_hands
+    changed_fm = async_tracker.set_filter_mode("one_euro")
+    assert changed_fm is False, "No-op filter set returned True"
+    assert len(async_tracker._latest_hands) == 1, "No-op filter set cleared _latest_hands!"
+
+    # Case-insensitive normalization check ('ONE_EURO')
+    changed_fm_norm = async_tracker.set_filter_mode("ONE_EURO")
+    assert changed_fm_norm is False, "No-op normalized filter set returned True"
+    assert len(async_tracker._latest_hands) == 1, "No-op normalized filter set cleared _latest_hands!"
+
+    # 3. Actual complexity switch (0 -> 1) returns True and clears _latest_hands
+    changed_mc_real = async_tracker.set_model_complexity(1)
+    assert changed_mc_real is True, "Actual complexity switch returned False"
+    assert len(async_tracker._latest_hands) == 0, "Actual complexity switch failed to clear _latest_hands!"
+
+    # Re-populate snapshot
+    with async_tracker._snapshot_lock:
+        async_tracker._latest_hands = [dummy_hand]
+    assert len(async_tracker._latest_hands) == 1
+
+    # 4. Actual filter switch ('one_euro' -> 'deadband') returns True and clears _latest_hands
+    changed_fm_real = async_tracker.set_filter_mode("deadband")
+    assert changed_fm_real is True, "Actual filter switch returned False"
+    assert len(async_tracker._latest_hands) == 0, "Actual filter switch failed to clear _latest_hands!"
+
+    # 5. BALANCED -> LOW in GestureARApp preserves tracking snapshot
+    # In BALANCED, model_complexity == 0. In LOW, model_complexity == 0.
+    app = GestureARApp(start_threads=False, init_mediapipe=False, quality_profile="BALANCED")
+    assert app.quality_config.model_complexity == 0
+    assert app.async_tracker.model_complexity == 0
+
+    with app.async_tracker._snapshot_lock:
+        app.async_tracker._latest_hands = [dummy_hand]
+    assert len(app.async_tracker._latest_hands) == 1
+
+    # Switch BALANCED -> LOW (both model_complexity == 0)
+    app.set_quality_profile("LOW")
+    assert app.quality_profile == "LOW"
+    assert app.quality_config.model_complexity == 0
+    assert len(app.async_tracker._latest_hands) == 1, "BALANCED -> LOW caused tracking snapshot dropout!"
+
+    # 6. HIGH -> BALANCED performs intentional model transition/reset
+    app.set_quality_profile("HIGH")
+    assert app.quality_profile == "HIGH"
+    assert app.async_tracker.model_complexity == 1
+
+    with app.async_tracker._snapshot_lock:
+        app.async_tracker._latest_hands = [dummy_hand]
+    assert len(app.async_tracker._latest_hands) == 1
+
+    app.set_quality_profile("BALANCED")
+    assert app.quality_profile == "BALANCED"
+    assert app.async_tracker.model_complexity == 0
+    assert len(app.async_tracker._latest_hands) == 0, "HIGH -> BALANCED failed to clear tracking snapshot on model switch!"
+
+
