@@ -50,7 +50,7 @@ class ThreadedCamera:
     Decouples frame acquisition from inference and rendering to maintain a stable 60 FPS.
     """
 
-    def __init__(self, src: int = 0, width: int = 1280, height: int = 720) -> None:
+    def __init__(self, src: int = 0, width: int = 1920, height: int = 1080) -> None:
         self.src = src
         self.target_width = width
         self.target_height = height
@@ -68,20 +68,30 @@ class ThreadedCamera:
     def start(self) -> ThreadedCamera:
         """Initializes camera hardware and launches the worker thread."""
         logger.info("Initializing VideoCapture on source %s...", self.src)
-        self.cap = cv2.VideoCapture(self.src, cv2.CAP_DSHOW if hasattr(cv2, 'CAP_DSHOW') else 0)
+        # Try default native backend first (optimal on Windows MSMF)
+        self.cap = cv2.VideoCapture(self.src)
 
-        if not self.cap.isOpened():
-            # Try default backend if DirectShow fails
-            self.cap = cv2.VideoCapture(self.src)
+        if not self.cap.isOpened() and hasattr(cv2, 'CAP_DSHOW'):
+            # Fallback to DirectShow if native backend fails
+            self.cap = cv2.VideoCapture(self.src, cv2.CAP_DSHOW)
 
         if self.cap.isOpened():
+            # Configure high-definition resolution (1080p Full HD for razor-sharp capture on 4K/HD webcams)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
-            self.cap.set(cv2.CAP_PROP_FPS, 60)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+            # Retrieve first warmup frame and detect actual hardware resolution
             self.ret, self.frame = self.cap.read()
+            if self.ret and self.frame is not None:
+                actual_h, actual_w = self.frame.shape[:2]
+                self.target_width = actual_w
+                self.target_height = actual_h
+                logger.info("Camera successfully opened at crisp %dx%d resolution", actual_w, actual_h)
+            else:
+                logger.info("Camera opened: %dx%d", self.target_width, self.target_height)
             self.is_simulation = False
-            logger.info("Camera successfully opened: %dx%d", self.target_width, self.target_height)
         else:
             logger.warning("No camera available on source %s. Falling back to synthetic simulation mode.", self.src)
             self.is_simulation = True

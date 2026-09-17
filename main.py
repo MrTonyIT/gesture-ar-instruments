@@ -60,8 +60,8 @@ class GestureARApp:
     def __init__(
         self,
         camera_id: int = 0,
-        width: int = 1280,
-        height: int = 720,
+        width: int = 1920,
+        height: int = 1080,
     ) -> None:
         self.width = width
         self.height = height
@@ -71,7 +71,7 @@ class GestureARApp:
         self.audio_engine = AudioEngine(sample_rate=44100, block_size=256)
         self.audio_engine.start()
 
-        logger.info("Initializing Threaded Camera on source %s...", camera_id)
+        logger.info("Initializing Threaded Camera on source %s (Target: %dx%d)...", camera_id, self.width, self.height)
         self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height)
         self.camera.start()
 
@@ -105,6 +105,7 @@ class GestureARApp:
         window_name = "Interactive Spatial AR Instruments - Cyber HUD"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(window_name, self.width, self.height)
+        window_configured = False
 
         try:
             while True:
@@ -115,6 +116,14 @@ class GestureARApp:
                 if not ret or raw_bgr_frame is None:
                     time.sleep(0.005)
                     continue
+
+                # Auto-detect camera resolution on first received frame
+                if not window_configured:
+                    window_configured = True
+                    act_h, act_w = raw_bgr_frame.shape[:2]
+                    self.width, self.height = act_w, act_h
+                    cv2.resizeWindow(window_name, self.width, self.height)
+                    logger.info("Window synchronized to native camera resolution: %dx%d", self.width, self.height)
 
                 # 2. Process Hand Tracking on raw frame
                 # Coordinates returned are already mirrored and smoothed (X_screen = (1.0 - x) * W)
@@ -142,10 +151,10 @@ class GestureARApp:
                 # Overflow trigger detection
                 if self.gesture_engine.soundbox_overflow_just_occurred:
                     self.last_overflow_time = time.perf_counter()
-                    self.overflow_msg = "THUNG DAN TRAN MAN HINH! HINH DA TU DONG BIEN MAT"
+                    self.overflow_msg = "SOUNDBOX EXCEEDED SCREEN BOUNDS! SHAPE AUTO-PURGED"
                 elif self.gesture_engine.neck_overflow_just_occurred:
                     self.last_overflow_time = time.perf_counter()
-                    self.overflow_msg = "CAN DAN TRAN MAN HINH! HINH DA TU DONG BIEN MAT"
+                    self.overflow_msg = "GUITAR NECK EXCEEDED SCREEN BOUNDS! SHAPE AUTO-PURGED"
 
                 # 4b. Check Gesture-based Application Exit (Crossed hands 'X' held for 1.8s)
                 if self.gesture_engine.should_exit:
@@ -249,21 +258,21 @@ class GestureARApp:
             cv2.putText(frame, "CHEST CHORDS", (fb[0] + 6, fb[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 140), 1, cv2.LINE_AA)
             cv2.putText(frame, "LAP STRUMMING", (sz[0] + 6, sz[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 100, 220), 1, cv2.LINE_AA)
         elif state == AppState.IDLE:
-            # Faint holographic guides for ergonomic desk piano & VIP sculpt guitar
+            # Faint holographic guides for ergonomic desk piano & sculpt guitar
             overlay_guide = frame.copy()
             p_xmin, p_xmax = int(0.05 * w), int(0.95 * w)
             p_ymin, p_ymax = int(0.72 * h), int(0.96 * h)
             cv2.rectangle(overlay_guide, (p_xmin, p_ymin), (p_xmax, p_ymax), (45, 40, 50), 1)
-            cv2.putText(overlay_guide, "VUNG PIANO MAT BAN (DAT CO TAY DE CHOI)", (p_xmin + 14, p_ymin + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (90, 85, 100), 1, cv2.LINE_AA)
+            cv2.putText(overlay_guide, "DESK SURFACE PIANO ZONE (REST WRISTS TO PLAY)", (p_xmin + 14, p_ymin + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (90, 85, 100), 1, cv2.LINE_AA)
 
             # Holographic guidance for sculpting and assembling guitar
             if self.gesture_engine.is_sculpt_locked:
-                cv2.putText(overlay_guide, "[🔒 CHE DO KHOA TAO HINH DANG BAT - RIG TAY VAN HOAT DONG]", (int(0.18 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 180, 255), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[AN NUT [L] (1S) O GOC PHAI TREN DE MO LAI TAO HINH]", (int(0.24 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[🔒 SCULPT CREATION LOCKED - HAND TRACKING RIG STILL ACTIVE]", (int(0.18 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 180, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[HOLD [L] BUTTON (1s) AT TOP-RIGHT TO UNLOCK CREATION]", (int(0.24 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1, cv2.LINE_AA)
             else:
-                cv2.putText(overlay_guide, "[🖐️ CHAM TRO & CAI 2 TAY KEO RA: CAN DAN]", (int(0.06 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 200, 180), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[🖐️ TAY PHAI KEO GIAN: THUNG TRON]", (int(0.56 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 50, 180), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[⚡ DUA 2 TAY LAI GAN DE GHEP THANH CAY DAN ⚡]", (int(0.30 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[🖐️ PINCH THUMB & INDEX (BOTH HANDS) TO SCULPT NECK]", (int(0.06 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 200, 180), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[🖐️ RIGHT HAND PINCH & EXPAND: SOUNDBOX]", (int(0.56 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 50, 180), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[⚡ BRING BOTH PARTS CLOSE (<145px) TO ASSEMBLE GUITAR ⚡]", (int(0.28 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1, cv2.LINE_AA)
             cv2.addWeighted(overlay_guide, 0.60, frame, 0.40, 0, frame)
 
         # 3. Render Circular Progress Bars for Gesture Spawning, Reset, Lock, and Exit
@@ -376,28 +385,48 @@ class GestureARApp:
         self._render_header(frame, state, len(hands))
 
     def _render_header(self, frame: np.ndarray, state: AppState, hand_count: int) -> None:
-        """Draws top information banner, telemetry status, and instructions."""
-        w = frame.shape[1]
+        """Draws top futuristic glassmorphic cyber header, telemetry status, and controls."""
+        h, w = frame.shape[:2]
+        now_t = time.perf_counter()
 
-        # Darkened top status bar
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (w, 52), (12, 10, 16), -1)
-        cv2.addWeighted(overlay, 0.70, frame, 0.30, 0, frame)
-        cv2.line(frame, (0, 52), (w, 52), (0, 240, 255), 1)
+        # 1. Glassmorphic Top Header Bar Background
+        header_h = 52
+        top_roi = frame[0:header_h, 0:w]
+        if top_roi.size > 0:
+            overlay = np.full_like(top_roi, (14, 11, 20), dtype=np.uint8)
+            cv2.addWeighted(overlay, 0.75, top_roi, 0.25, 0, top_roi)
+            frame[0:header_h, 0:w] = top_roi
 
-        # Title
+        # Neon Cyan Bottom Accent Line with subtle glow
+        cv2.line(frame, (0, header_h), (w, header_h), (0, 240, 255), 1, cv2.LINE_AA)
+        cv2.line(frame, (0, header_h + 1), (w, header_h + 1), (0, 90, 110), 1, cv2.LINE_AA)
+
+        # 2. Zone 1: Branding (Left)
         cv2.putText(
             frame,
-            "GESTURE AR INSTRUMENTS",
+            "GESTURE AR",
             (16, 26),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 240, 255),
+            0.56,
+            (240, 255, 255),
             2,
             cv2.LINE_AA,
         )
+        cv2.putText(
+            frame,
+            "INSTRUMENTS",
+            (16, 42),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.34,
+            (0, 220, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
-        # State Badge
+        # Vertical cyber separator
+        cv2.line(frame, (148, 12), (148, 42), (50, 45, 65), 1, cv2.LINE_AA)
+
+        # 3. Zone 2: Dynamic State Capsule Badge (Center-Left)
         state_colors = {
             AppState.IDLE: (180, 180, 180),
             AppState.CREATING_PIANO: (0, 200, 255),
@@ -409,24 +438,65 @@ class GestureARApp:
             AppState.GUITAR_ACTIVE: (255, 0, 220),
         }
         badge_color = state_colors.get(state, (200, 200, 200))
+        state_str = f"STATE: {state.value}"
+        st_size = cv2.getTextSize(state_str, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)[0]
+
+        sx1 = 160
+        sx2 = sx1 + st_size[0] + 32
+        sy1, sy2 = 10, 44
+
+        s_sub = frame[sy1:sy2, sx1:sx2]
+        if s_sub.size > 0:
+            s_overlay = np.full_like(s_sub, (22, 18, 28), dtype=np.uint8)
+            cv2.addWeighted(s_overlay, 0.70, s_sub, 0.30, 0, s_sub)
+            frame[sy1:sy2, sx1:sx2] = s_sub
+            cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), badge_color, 1, cv2.LINE_AA)
+
+        # Glowing animated status LED dot
+        pulse_r = int(6 + 2 * np.sin(now_t * 6.0))
+        cv2.circle(frame, (sx1 + 12, 27), pulse_r, badge_color, 1, cv2.LINE_AA)
+        cv2.circle(frame, (sx1 + 12, 27), 4, badge_color, -1, cv2.LINE_AA)
         cv2.putText(
             frame,
-            f"STATE: {state.value}",
-            (280, 26),
+            state_str,
+            (sx1 + 22, 32),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
+            0.44,
             badge_color,
-            2,
+            1,
             cv2.LINE_AA,
         )
 
-        # FPS & Hand Tracking Telemetry (Shifted left to accommodate Lock, Reset & Exit buttons)
+        # 4. Zone 3: Telemetry Capsule (Center) - Guaranteed Non-Overlapping Spacing
         mode_tag = "SMOOTH-0ms" if self.hand_tracker.filter_mode == "one_euro" else ("0ms-LAG" if self.hand_tracker.filter_mode == "zero_lag" else "RAW")
         fps_text = f"FPS: {self.fps:.1f} | RIG: {mode_tag} | HANDS: {hand_count}"
+        telem_size = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0]
+        telem_w = telem_size[0]
+
+        btn_zone_start = w - 515
+        space_left = sx2 + 18
+        space_right = btn_zone_start - 16
+
+        # Position telemetry with graceful fallback if space is tight
+        if space_right - space_left > telem_w:
+            tx1 = space_left + ((space_right - space_left) - telem_w) // 2 - 8
+        else:
+            tx1 = space_left
+
+        tx2 = tx1 + telem_w + 16
+        ty1, ty2 = 11, 43
+
+        t_sub = frame[ty1:ty2, tx1:tx2]
+        if t_sub.size > 0:
+            t_overlay = np.full_like(t_sub, (18, 16, 26), dtype=np.uint8)
+            cv2.addWeighted(t_overlay, 0.65, t_sub, 0.35, 0, t_sub)
+            frame[ty1:ty2, tx1:tx2] = t_sub
+            cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (65, 55, 85), 1, cv2.LINE_AA)
+
         cv2.putText(
             frame,
             fps_text,
-            (w - 870, 26),
+            (tx1 + 8, 31),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.38,
             (200, 240, 255),
@@ -434,7 +504,8 @@ class GestureARApp:
             cv2.LINE_AA,
         )
 
-        # Top Cyber Lock Sculpt Button (Hold fingertip for 1.0s to Toggle Shape Creation Lock)
+        # 5. Zone 4: Top-Right Glassmorphic Action Buttons
+        # 5a. Lock Sculpt Button (Hold fingertip for 1.0s to Toggle Shape Creation Lock)
         lx1, ly1, lx2, ly2 = w - 515, 8, w - 355, 44
         l_prog = self.gesture_engine.lock_progress
         is_touching_lock = self.gesture_engine.is_touching_lock
@@ -460,22 +531,22 @@ class GestureARApp:
                 border_col = (0, 160, 255) if is_locked else (0, 180, 140)
                 cv2.rectangle(frame, (lx1, ly1), (lx2, ly2), border_col, 1, cv2.LINE_AA)
 
-        # Text & Countdown inside Lock Sculpt Button
+        # Text & Status inside Lock Sculpt Button
         if is_touching_lock:
             rem_l = max(0.0, 1.0 - (l_prog * 1.0))
-            action_txt = "MO" if is_locked else "KHOA"
+            action_txt = "UNLOCK" if is_locked else "LOCK"
             l_text = f"{action_txt}: {rem_l:.1f}s ({int(l_prog * 100)}%)"
-            cv2.putText(frame, l_text, (lx1 + 8, ly1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, l_text, (lx1 + 8, ly1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.circle(frame, (lx2 - 12, ly1 + 12), 4, (0, 255, 200) if is_locked else (0, 180, 255), -1, cv2.LINE_AA)
         else:
             if is_locked:
-                cv2.putText(frame, "[L] DA KHOA (1S)", (lx1 + 10, ly1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 180, 255), 1, cv2.LINE_AA)
+                cv2.putText(frame, "[L] LOCKED (1s)", (lx1 + 12, ly1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (0, 180, 255), 1, cv2.LINE_AA)
                 cv2.circle(frame, (lx2 - 12, ly1 + 12), 4, (0, 160, 255), -1, cv2.LINE_AA)
             else:
-                cv2.putText(frame, "[L] KHOA HINH (1S)", (lx1 + 8, ly1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (0, 240, 180), 1, cv2.LINE_AA)
+                cv2.putText(frame, "[L] LOCK SHAPE (1s)", (lx1 + 8, ly1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 240, 180), 1, cv2.LINE_AA)
                 cv2.circle(frame, (lx2 - 12, ly1 + 12), 4, (0, 240, 180), -1, cv2.LINE_AA)
 
-        # Top Cyber Reset Button (Hold fingertip for 0.7s to Reset)
+        # 5b. Reset Button (Hold fingertip for 0.7s to Reset)
         rx1, ry1, rx2, ry2 = w - 345, 8, w - 185, 44
         r_prog = self.gesture_engine.reset_progress
         is_touching_reset = self.gesture_engine.is_touching_reset
@@ -484,31 +555,29 @@ class GestureARApp:
         if r_sub.size > 0:
             r_overlay = r_sub.copy()
             if is_touching_reset:
-                # Energetic dark cyan / gold fill
                 r_overlay[:] = (20, 35, 45)
                 fill_w = int((rx2 - rx1) * r_prog)
                 if fill_w > 0:
-                    r_overlay[:, :fill_w] = (0, 180, 255)  # Glowing Cyber Gold / Orange
+                    r_overlay[:, :fill_w] = (0, 180, 255)  # Glowing Cyber Gold / Amber
                 cv2.addWeighted(r_overlay, 0.85, r_sub, 0.15, 0, r_sub)
                 frame[ry1:ry2, rx1:rx2] = r_sub
                 cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 220, 255), 2, cv2.LINE_AA)
             else:
-                # Resting dark cyan / obsidian badge
                 r_overlay[:] = (18, 22, 28)
                 cv2.addWeighted(r_overlay, 0.70, r_sub, 0.30, 0, r_sub)
                 frame[ry1:ry2, rx1:rx2] = r_sub
                 cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 140, 180), 1, cv2.LINE_AA)
 
-        # Text & Countdown inside Reset Button
+        # Text & Status inside Reset Button
         if is_touching_reset:
             rem_r = max(0.0, 0.70 - (r_prog * 0.70))
             r_text = f"RESET: {rem_r:.1f}s ({int(r_prog * 100)}%)"
-            cv2.putText(frame, r_text, (rx1 + 10, ry1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, r_text, (rx1 + 10, ry1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.circle(frame, (rx2 - 12, ry1 + 12), 4, (0, 255, 255), -1, cv2.LINE_AA)
         else:
-            cv2.putText(frame, "[R] RESET (0.7S)", (rx1 + 14, ry1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, "[R] RESET (0.7s)", (rx1 + 16, ry1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 220, 255), 1, cv2.LINE_AA)
 
-        # Top-Right Cyber Exit Button (Hold fingertip for 3.0s to Exit)
+        # 5c. Exit Button (Hold fingertip for 3.0s to Exit)
         bx1, by1, bx2, by2 = w - 175, 8, w - 15, 44
         e_prog = self.gesture_engine.exit_progress
         is_touching = self.gesture_engine.is_touching_exit
@@ -517,65 +586,62 @@ class GestureARApp:
         if btn_sub.size > 0:
             btn_overlay = btn_sub.copy()
             if is_touching:
-                # Energetic dark crimson fill
                 btn_overlay[:] = (20, 10, 80)
-                # Dynamic fill progress bar from left to right inside the button
                 fill_w = int((bx2 - bx1) * e_prog)
                 if fill_w > 0:
-                    btn_overlay[:, :fill_w] = (0, 35, 210)  # Fiery laser red
+                    btn_overlay[:, :fill_w] = (0, 35, 210)  # Laser Red
                 cv2.addWeighted(btn_overlay, 0.85, btn_sub, 0.15, 0, btn_sub)
                 frame[by1:by2, bx1:bx2] = btn_sub
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 140, 255), 2, cv2.LINE_AA)
             else:
-                # Resting dark crimson / obsidian badge
                 btn_overlay[:] = (24, 16, 32)
                 cv2.addWeighted(btn_overlay, 0.70, btn_sub, 0.30, 0, btn_sub)
                 frame[by1:by2, bx1:bx2] = btn_sub
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), (60, 40, 160), 1, cv2.LINE_AA)
 
-        # Text & Countdown inside Exit Button
+        # Text & Status inside Exit Button
         if is_touching:
             rem_time = max(0.0, 3.0 - (e_prog * 3.0))
-            btn_text = f"THOAT: {rem_time:.1f}s ({int(e_prog * 100)}%)"
-            cv2.putText(frame, btn_text, (bx1 + 8, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 2, cv2.LINE_AA)
+            btn_text = f"EXIT: {rem_time:.1f}s ({int(e_prog * 100)}%)"
+            cv2.putText(frame, btn_text, (bx1 + 8, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.circle(frame, (bx2 - 12, by1 + 12), 4, (0, 255, 255), -1, cv2.LINE_AA)
         else:
-            cv2.putText(frame, "[X] THOAT (3S)", (bx1 + 16, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (220, 180, 220), 1, cv2.LINE_AA)
+            cv2.putText(frame, "[X] EXIT (3s)", (bx1 + 24, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 180, 220), 1, cv2.LINE_AA)
 
-        # Context-aware Instruction Banner (Bottom of Screen)
+        # 6. Context-Aware English Instruction Banner (Bottom Dock)
         instruction_map = {
-            AppState.IDLE: "CHON DAN: 2 tay 'L' = PIANO | 2 tay keo ra = NAN GUITAR | Nut KHOA (1s) | RESET (0.7s)",
-            AppState.CREATING_PIANO: "KHOA PIANO: Giu 2 tay chu 'L' 1.2s...",
-            AppState.PIANO_ACTIVE: "PIANO: Go phim tren ban | Cham nut RESET (0.7s) de ve Menu",
-            AppState.CREATING_GUITAR: "KHOA GUITAR: Giu tay trai nhup 'O' 1.2s...",
-            AppState.SCULPTING_GUITAR: "NAN DAN: Cham tro & cai 2 tay keo ra: CAN DAN (1.5s) | Tay phai: THUNG TRON (1.5s)",
-            AppState.READY_TO_ASSEMBLE: "⚡ CHAM DONG THOI NGON CAI & TRO VAO HINH DE KEO! Dua 2 hinh lai gan (<145px) de GHEP DAN! ⚡",
-            AppState.FUSION_SNAP: "⚡ SNAP FUSION: DANG KET HOP 2 PHAN THANH CAY DAN 3D HOAN CHINH! ⚡",
-            AppState.GUITAR_ACTIVE: "GUITAR: Tay trai gio 1-4 ngon doi hop am | Tay phai dung ngon CAI & TRO danh dan | Nut RESET (0.7s)",
+            AppState.IDLE: "SELECT INSTRUMENT: Both hands 'L' = DESK PIANO | Pull apart = SCULPT GUITAR | [L] LOCK (1s)",
+            AppState.CREATING_PIANO: "LOCKING PIANO: Hold 'L' pose on surface for 1.2s...",
+            AppState.PIANO_ACTIVE: "VIRTUAL PIANO: Tap keys on desk surface | Hold [RESET] (0.7s) to return to menu",
+            AppState.CREATING_GUITAR: "LOCKING GUITAR: Hold left-hand 'O' pinch for 1.2s...",
+            AppState.SCULPTING_GUITAR: "SCULPT: Both hands pinch & stretch = NECK (1.5s) | Right hand pinch = SOUNDBOX (1.5s)",
+            AppState.READY_TO_ASSEMBLE: "ASSEMBLE: Dual-finger touch to drag shapes | Bring within 145px to SNAP FUSE!",
+            AppState.FUSION_SNAP: "SNAP FUSION: Merging soundbox and neck into playable 3D Cyber Guitar...",
+            AppState.GUITAR_ACTIVE: "GUITAR: Left hand 1-4 fingers switch chord | Right hand pluck with thumb/index | [RESET] (0.7s)",
         }
         inst_text = instruction_map.get(state, "")
 
         # Bottom instruction strip (compact 24px bar docked below piano)
-        h = frame.shape[0]
         overlay_bottom = frame.copy()
         cv2.rectangle(overlay_bottom, (0, h - 24), (w, h), (10, 8, 14), -1)
         cv2.addWeighted(overlay_bottom, 0.75, frame, 0.25, 0, frame)
+        cv2.line(frame, (0, h - 24), (w, h - 24), (40, 35, 55), 1, cv2.LINE_AA)
         cv2.putText(
             frame,
             inst_text,
             (16, h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
+            0.40,
             (0, 255, 230),
             1,
             cv2.LINE_AA,
         )
         cv2.putText(
             frame,
-            "Nut [KHOA] (1s) | [RESET] (0.7s) | [THOAT] (3s) o tren phai",
-            (w - 510, h - 7),
+            "Quick: [L] LOCK (1s) | [R] RESET (0.7s) | [X] EXIT (3s)",
+            (w - 410, h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.38,
+            0.36,
             (0, 220, 255),
             1,
             cv2.LINE_AA,
@@ -687,7 +753,7 @@ class GestureARApp:
                 cv2.circle(frame, (cx, cy), r_black, (0, 240, 255), 2, cv2.LINE_AA)
                 # Crosshair marker inside black center
                 cv2.drawMarker(frame, (cx, cy), (0, 240, 255), cv2.MARKER_CROSS, 10, 1, cv2.LINE_AA)
-                cv2.putText(frame, "TAM DEN", (cx - 21, cy + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 240, 255), 1, cv2.LINE_AA)
+                cv2.putText(frame, "CORE", (cx - 15, cy + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 240, 255), 1, cv2.LINE_AA)
 
             # 1.5s Hold Progress Ring when sculpting
             if not is_locked and ge.soundbox_hold_progress > 0.0:
@@ -704,11 +770,11 @@ class GestureARApp:
                         # Dual-finger touch indicators
                         cv2.circle(frame, (p4[0], p4[1]), 10, (0, 255, 255), 2, cv2.LINE_AA)
                         cv2.circle(frame, (p4[0], p4[1]), 4, (255, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "CAI", (p4[0] - 12, p4[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "THUMB", (p4[0] - 14, p4[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1, cv2.LINE_AA)
 
                         cv2.circle(frame, (p8[0], p8[1]), 10, (0, 255, 255), 2, cv2.LINE_AA)
                         cv2.circle(frame, (p8[0], p8[1]), 4, (255, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "TRO", (p8[0] - 12, p8[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "INDEX", (p8[0] - 14, p8[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1, cv2.LINE_AA)
 
                         cv2.line(frame, (p4[0], p4[1]), (cx, cy), (0, 255, 255), 2, cv2.LINE_AA)
                         cv2.line(frame, (p8[0], p8[1]), (cx, cy), (0, 255, 255), 2, cv2.LINE_AA)
@@ -716,24 +782,30 @@ class GestureARApp:
                         fx, fy = int((p4[0] + p8[0]) / 2), int((p4[1] + p8[1]) / 2)
                         cv2.line(frame, (p4[0], p4[1]), (p8[0], p8[1]), (0, 200, 255), 1, cv2.LINE_AA)
                         cv2.circle(frame, (fx, fy), 6, (0, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "✌️ 2 NGON CHAM", (fx - 45, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "✌️ DUAL-TOUCH", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1, cv2.LINE_AA)
                         break
 
-            # Dynamic Status Badge
+            # Dynamic Glassmorphic Status Badge
             if is_dragging:
-                badge = "[ ✌️ DANG CHAM 2 NGON KEO THUNG DAN ]"
+                badge = "[ ✌️ DUAL-TOUCH: DRAGGING SOUNDBOX ]"
             elif is_locked:
-                badge = "[ THUNG DAN: DUNG YEN - CHAM DONG THOI NGON CAI & TRO DE KEO ]"
+                badge = "[ SOUNDBOX LOCKED: TOUCH THUMB & INDEX TO DRAG ]"
             elif ge.soundbox_hold_progress > 0.0:
-                badge = f"NAN THUNG DAN: GIU YEN {int(ge.soundbox_hold_progress * 100)}% (1.5s)"
+                badge = f"SCULPT SOUNDBOX: HOLD STEADY {int(ge.soundbox_hold_progress * 100)}% (1.5s)"
             else:
-                badge = f"NAN THUNG DAN: {int(ge.soundbox_progress * 100)}%"
+                badge = f"SCULPT SOUNDBOX: {int(ge.soundbox_progress * 100)}%"
 
             text_size = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)[0]
             bx = max(10, min(frame.shape[1] - text_size[0] - 20, cx - text_size[0] // 2))
             by = min(frame.shape[0] - 25, cy + r + 24)
-            cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), (15, 10, 20), -1)
-            cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), col_primary, 1)
+
+            # Translucent glassmorphic backing for status badge
+            sub_b = frame[by - 16:by + 6, bx - 4:bx + text_size[0] + 8]
+            if sub_b.size > 0:
+                ov_b = np.full_like(sub_b, (16, 12, 24))
+                cv2.addWeighted(ov_b, 0.75, sub_b, 0.25, 0, sub_b)
+                frame[by - 16:by + 6, bx - 4:bx + text_size[0] + 8] = sub_b
+            cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), col_primary, 1, cv2.LINE_AA)
             cv2.putText(frame, badge, (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.40, col_primary, 1, cv2.LINE_AA)
 
         # 2. Both Hands: Rectangle / Fretboard & Neck (Cần đàn)
@@ -745,7 +817,7 @@ class GestureARApp:
             cv2.circle(frame, (tx, ty), 6, (255, 255, 255), -1, cv2.LINE_AA)
             cv2.putText(
                 frame,
-                "✨ DA CHAM 2 TAY! KEO RA DE TAO CAN DAN ✨",
+                "✨ CONTACT DETECTED! PULL APART TO SCULPT NECK ✨",
                 (max(20, tx - 190), max(30, ty - 26)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.46,
@@ -775,7 +847,6 @@ class GestureARApp:
             rx2, ry2 = cx + w_rect // 2, cy + h_rect // 2
 
             # Render 2 long laser guide lines when pulling hands apart
-            # User requirement: "đoạn ngón tay tro và ngón tay cái 2 bàn tay chạm vào nhau phải có 2 đường thẳng dài khi kéo ra để tạo hình chữ nhật"
             if not is_locked and ge.neck_line_upper is not None and ge.neck_line_lower is not None:
                 u1, u2 = ge.neck_line_upper
                 d1, d2 = ge.neck_line_lower
@@ -831,11 +902,11 @@ class GestureARApp:
 
                         cv2.circle(frame, (p4[0], p4[1]), 10, (50, 255, 200), 2, cv2.LINE_AA)
                         cv2.circle(frame, (p4[0], p4[1]), 4, (255, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "CAI", (p4[0] - 12, p4[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (50, 255, 200), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "THUMB", (p4[0] - 14, p4[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (50, 255, 200), 1, cv2.LINE_AA)
 
                         cv2.circle(frame, (p8[0], p8[1]), 10, (50, 255, 200), 2, cv2.LINE_AA)
                         cv2.circle(frame, (p8[0], p8[1]), 4, (255, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "TRO", (p8[0] - 12, p8[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (50, 255, 200), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "INDEX", (p8[0] - 14, p8[1] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (50, 255, 200), 1, cv2.LINE_AA)
 
                         cv2.line(frame, (p4[0], p4[1]), (cx, cy), (50, 255, 200), 2, cv2.LINE_AA)
                         cv2.line(frame, (p8[0], p8[1]), (cx, cy), (50, 255, 200), 2, cv2.LINE_AA)
@@ -843,24 +914,30 @@ class GestureARApp:
                         fx, fy = int((p4[0] + p8[0]) / 2), int((p4[1] + p8[1]) / 2)
                         cv2.line(frame, (p4[0], p4[1]), (p8[0], p8[1]), (100, 255, 180), 1, cv2.LINE_AA)
                         cv2.circle(frame, (fx, fy), 6, (50, 255, 200), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "✌️ 2 NGON CHAM", (fx - 45, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (50, 255, 200), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "✌️ DUAL-TOUCH", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (50, 255, 200), 1, cv2.LINE_AA)
                         break
 
-            # Dynamic Status Badge
+            # Dynamic Glassmorphic Status Badge
             if is_dragging:
-                badge = "[ ✌️ DANG CHAM 2 NGON KEO CAN DAN ]"
+                badge = "[ ✌️ DUAL-TOUCH: DRAGGING NECK ]"
             elif is_locked:
-                badge = "[ CAN DAN: DUNG YEN - CHAM DONG THOI NGON CAI & TRO DE KEO ]"
+                badge = "[ NECK LOCKED: TOUCH THUMB & INDEX TO DRAG ]"
             elif ge.neck_hold_progress > 0.0:
-                badge = f"NAN CAN DAN: GIU YEN {int(ge.neck_hold_progress * 100)}% (1.5s)"
+                badge = f"SCULPT NECK: HOLD STEADY {int(ge.neck_hold_progress * 100)}% (1.5s)"
             else:
-                badge = f"NAN CAN DAN (2 TAY KEO RA): {int(ge.neck_progress * 100)}%"
+                badge = f"SCULPT NECK (PULL APART): {int(ge.neck_progress * 100)}%"
 
             text_size = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)[0]
             bx = max(10, min(frame.shape[1] - text_size[0] - 20, cx - text_size[0] // 2))
             by = min(frame.shape[0] - 25, ry2 + 24)
-            cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), (15, 10, 20), -1)
-            cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), col_primary, 1)
+
+            # Translucent glassmorphic backing for status badge
+            sub_n = frame[by - 16:by + 6, bx - 4:bx + text_size[0] + 8]
+            if sub_n.size > 0:
+                ov_n = np.full_like(sub_n, (16, 12, 24))
+                cv2.addWeighted(ov_n, 0.75, sub_n, 0.25, 0, sub_n)
+                frame[by - 16:by + 6, bx - 4:bx + text_size[0] + 8] = sub_n
+            cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), col_primary, 1, cv2.LINE_AA)
             cv2.putText(frame, badge, (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.40, col_primary, 1, cv2.LINE_AA)
 
         # Screen Overflow Disappearance Visual Alert
@@ -890,7 +967,7 @@ class GestureARApp:
             hud_y = 105
             cv2.putText(
                 frame,
-                f"⚡ DUA 2 HINH LAI GAN (<145px) DE GHEP DAN! (KHOANG CACH: {d_px}px)",
+                f"⚡ BRING SHAPES CLOSE (<145px) TO ASSEMBLE! (DISTANCE: {d_px}px)",
                 (frame.shape[1] // 2 - 320, hud_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -965,8 +1042,8 @@ class GestureARApp:
         # 4. Success text
         cv2.putText(
             frame,
-            "⚡ SNAP FUSION! GHEP DAN THANH CONG! ⚡",
-            (w // 2 - 270, min(h - 80, cy - radius - 20)),
+            "⚡ SNAP FUSION! GUITAR ASSEMBLED SUCCESSFULLY! ⚡",
+            (w // 2 - 300, min(h - 80, cy - radius - 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
             (0, 255, 255),
@@ -987,8 +1064,8 @@ class GestureARApp:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gesture AR Instruments - Virtual Piano & Guitar")
     parser.add_argument("--camera-id", type=int, default=0, help="Webcam device index (default: 0)")
-    parser.add_argument("--width", type=int, default=1280, help="Display frame width (default: 1280)")
-    parser.add_argument("--height", type=int, default=720, help="Display frame height (default: 720)")
+    parser.add_argument("--width", type=int, default=1920, help="Display frame width (default: 1920)")
+    parser.add_argument("--height", type=int, default=1080, help="Display frame height (default: 1080)")
     return parser.parse_args()
 
 

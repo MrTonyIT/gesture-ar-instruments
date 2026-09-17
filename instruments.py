@@ -947,19 +947,19 @@ class Guitar:
 
         # 2. Render Floating Fretboard Chord Selector (Optimized HUD)
         finger_subtitles = {
-            "C": "1 Ngon [1]",
-            "G": "2 Ngon [2]",
-            "Am": "3 Ngon [3]",
-            "Em": "4 Ngon [4]",
+            "C": "1 Finger [1]",
+            "G": "2 Fingers [2]",
+            "Am": "3 Fingers [3]",
+            "Em": "4 Fingers [4]",
         }
 
-        # Guide banner above chord boxes
+        # Guide banner placed directly below chord boxes (Y=122) to prevent any header collision
         cv2.putText(
             frame,
-            "TAY TRAI: GIO 1, 2, 3, 4 NGON DE DOI HOP AM (HOAC TRUOT TREN CAN DAN)",
-            (24, 46),
+            "LEFT HAND: RAISE 1-4 FINGERS TO SWITCH CHORDS (OR TOUCH BOXES)",
+            (24, 122),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
+            0.38,
             (0, 240, 255),
             1,
             cv2.LINE_AA,
@@ -1057,16 +1057,20 @@ class Guitar:
             by = max(30, min(frame.shape[0] - 20, palm_cy - 48))
 
             count_labels = {
-                1: "1 NGON: [ C ]",
-                2: "2 NGON: [ G ]",
-                3: "3 NGON: [ Am ]",
-                4: "4 NGON: [ Em ]",
+                1: "1 FINGER: [ C ]",
+                2: "2 FINGERS: [ G ]",
+                3: "3 FINGERS: [ Am ]",
+                4: "4 FINGERS: [ Em ]",
             }
-            badge_text = count_labels.get(self.lh_finger_count, f"HOP AM: [ {self.active_chord} ]")
+            badge_text = count_labels.get(self.lh_finger_count, f"CHORD: [ {self.active_chord} ]")
 
-            # Cyber pill badge
-            cv2.rectangle(frame, (bx, by - 18), (bx + 170, by + 6), (15, 12, 22), -1)
-            cv2.rectangle(frame, (bx, by - 18), (bx + 170, by + 6), (0, 255, 140), 1)
+            # Glassmorphic cyber pill badge
+            sub_ch = frame[by - 18:by + 6, bx:bx + 170]
+            if sub_ch.size > 0:
+                ov_ch = np.full_like(sub_ch, (15, 12, 22))
+                cv2.addWeighted(ov_ch, 0.70, sub_ch, 0.30, 0, sub_ch)
+                frame[by - 18:by + 6, bx:bx + 170] = sub_ch
+            cv2.rectangle(frame, (bx, by - 18), (bx + 170, by + 6), (0, 255, 140), 1, cv2.LINE_AA)
             cv2.putText(
                 frame,
                 badge_text,

@@ -295,7 +295,7 @@ class GestureEngine:
             self.exit_center = exit_touch_pos
             self.is_touching_exit = True
             rem_sec = max(0.0, self.EXIT_HOLD_DURATION - elapsed_exit)
-            self.exit_label = f"THOAT ({rem_sec:.1f}s)"
+            self.exit_label = f"EXIT ({rem_sec:.1f}s)"
 
             if self.exit_progress >= 1.0:
                 logger.info("Exit button held for 3.0s! Setting should_exit = True")
@@ -387,7 +387,7 @@ class GestureEngine:
                 elapsed_lock = now - self._lock_start_time
                 self.lock_progress = float(np.clip(elapsed_lock / self.LOCK_SCULPT_HOLD_DURATION, 0.0, 1.0))
                 rem_l = max(0.0, self.LOCK_SCULPT_HOLD_DURATION - elapsed_lock)
-                action_str = "MO" if self.is_sculpt_locked else "KHOA"
+                action_str = "UNLOCK" if self.is_sculpt_locked else "LOCK"
                 self.lock_label = f"{action_str} ({rem_l:.1f}s)"
 
                 if self.lock_progress >= 1.0:
@@ -410,7 +410,7 @@ class GestureEngine:
                             self.state = AppState.IDLE
             else:
                 self.lock_progress = 1.0
-                status_str = "DA KHOA" if self.is_sculpt_locked else "DA MO"
+                status_str = "LOCKED" if self.is_sculpt_locked else "UNLOCKED"
                 self.lock_label = status_str
         else:
             self._lock_start_time = None
