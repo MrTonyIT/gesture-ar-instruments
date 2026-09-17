@@ -45,6 +45,12 @@ dependencies = [
     "scipy>=1.10.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0"
+]
+
 [project.scripts]
 gesture-ar = "main:main"
 
@@ -52,3 +58,19 @@ gesture-ar = "main:main"
 Homepage = "https://github.com/MrTonyIT/gesture-ar-instruments"
 Repository = "https://github.com/MrTonyIT/gesture-ar-instruments.git"
 "Bug Tracker" = "https://github.com/MrTonyIT/gesture-ar-instruments/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:sounddevice.*",
+    "ignore::DeprecationWarning:numpy.*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+

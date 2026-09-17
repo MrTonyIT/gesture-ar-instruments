@@ -309,14 +309,38 @@ class AudioEngine:
         329.63,  # String 5: E4 (1st string, thinnest)
     )
 
-    # Standard Guitar Chord Fret Offsets (semitones above open string)
-    # Form: (str0, str1, str2, str3, str4, str5)
-    CHORD_FRETS: Dict[str, Tuple[int, int, int, int, int, int]] = {
-        "C":  (0, 3, 2, 0, 1, 0),   # E2, C3, E3, G3, C4, E4
-        "G":  (3, 2, 0, 0, 0, 3),   # G2, B2, D3, G3, B3, G4
-        "Am": (0, 0, 2, 2, 1, 0),   # E2, A2, E3, A3, C4, E4
-        "Em": (0, 2, 2, 0, 0, 0),   # E2, B2, E3, G3, B3, E4
+    # Standard Guitar Chord Fret Offsets (semitones above open string).
+    # Form: (str0, str1, str2, str3, str4, str5) from 6th (low E) to 1st (high E).
+    # None indicates a MUTED string (must not play).
+    CHORD_FRETS: Dict[str, Tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int], Optional[int]]] = {
+        "C":  (None, 3, 2, 0, 1, 0),     # x 3 2 0 1 0 (Root C on 5th string)
+        "G":  (3, 2, 0, 0, 0, 3),        # 3 2 0 0 0 3 (Root G on 6th string)
+        "D":  (None, None, 0, 2, 3, 2),  # x x 0 2 3 2 (Root D on 4th string)
+        "A":  (None, 0, 2, 2, 2, 0),     # x 0 2 2 2 0 (Root A on 5th string)
+        "E":  (0, 2, 2, 1, 0, 0),        # 0 2 2 1 0 0 (Root E on 6th string)
+        "Am": (None, 0, 2, 2, 1, 0),     # x 0 2 2 1 0 (Root A on 5th string)
+        "Em": (0, 2, 2, 0, 0, 0),        # 0 2 2 0 0 0 (Root E on 6th string)
+        "Dm": (None, None, 0, 2, 3, 1),  # x x 0 2 3 1 (Root D on 4th string)
+        "F":  (1, 3, 3, 2, 1, 1),        # 1 3 3 2 1 1 (Full barre F major)
     }
+
+    @classmethod
+    def get_supported_chords(cls) -> List[str]:
+        """Returns the list of all supported guitar chord names."""
+        return list(cls.CHORD_FRETS.keys())
+
+    @classmethod
+    def is_string_muted(cls, chord_name: str, string_idx: int) -> bool:
+        """Returns True if the specified string is muted (x) in the given chord."""
+        frets = cls.CHORD_FRETS.get(chord_name, cls.CHORD_FRETS["C"])
+        if 0 <= string_idx < len(frets):
+            return frets[string_idx] is None
+        return True
+
+    @classmethod
+    def get_chord_voicing(cls, chord_name: str) -> Tuple[Optional[int], ...]:
+        """Returns the 6-string fret offsets for the chord (None for muted)."""
+        return cls.CHORD_FRETS.get(chord_name, cls.CHORD_FRETS["C"])
 
     def __init__(self, sample_rate: int = 44100, block_size: int = 256) -> None:
         self.sample_rate = sample_rate
@@ -387,24 +411,31 @@ class AudioEngine:
         )
         with self._lock:
             # Prevent excessive voice buildup (cap at 32 voices)
-            if len(self._active_voices) > 32:
+            if len(self._active_voices) >= 32:
                 self._active_voices.pop(0)
             self._active_voices.append(voice)
 
-    def play_guitar(self, string_idx: int, chord_name: str = "C", velocity: float = 1.0) -> None:
+    def play_guitar(self, string_idx: int, chord_name: str = "C", velocity: float = 1.0) -> bool:
         """
         Triggers a plucked string note for a specific guitar string and chord.
 
         Args:
             string_idx: String index 0 to 5 (0 = 6th string E2, 5 = 1st string E4).
-            chord_name: One of 'C', 'G', 'Am', 'Em'.
+            chord_name: One of 'C', 'G', 'D', 'A', 'E', 'Am', 'Em', 'Dm', 'F'.
             velocity: Pluck velocity (0.1 to 1.0).
+
+        Returns:
+            True if sound was played, False if string is muted in this chord.
         """
         string_idx = int(np.clip(string_idx, 0, 5))
-        base_freq = self.GUITAR_OPEN_FREQS[string_idx]
-        frets = self.CHORD_FRETS.get(chord_name, (0, 0, 0, 0, 0, 0))
+        frets = self.CHORD_FRETS.get(chord_name, self.CHORD_FRETS["C"])
         fret_offset = frets[string_idx]
 
+        # Muted string: MUST NOT play or produce sound
+        if fret_offset is None:
+            return False
+
+        base_freq = self.GUITAR_OPEN_FREQS[string_idx]
         # Equal temperament frequency shift: f = f_0 * 2^(fret / 12)
         chord_freq = base_freq * (2.0 ** (fret_offset / 12.0))
 
@@ -418,15 +449,16 @@ class AudioEngine:
             pan=pan,
         )
         with self._lock:
-            if len(self._active_voices) > 32:
+            if len(self._active_voices) >= 32:
                 self._active_voices.pop(0)
             self._active_voices.append(voice)
+        return True
 
     def play_shape_lock(self) -> None:
         """Triggers futuristic cyber confirmation chime when a sculpted shape locks."""
         voice = CyberSFXVoice(sfx_type="lock", sample_rate=self.sample_rate)
         with self._lock:
-            if len(self._active_voices) > 32:
+            if len(self._active_voices) >= 32:
                 self._active_voices.pop(0)
             self._active_voices.append(voice)
 
@@ -434,7 +466,7 @@ class AudioEngine:
         """Triggers subtle blip during shape expansion."""
         voice = CyberSFXVoice(sfx_type="tick", sample_rate=self.sample_rate)
         with self._lock:
-            if len(self._active_voices) > 32:
+            if len(self._active_voices) >= 32:
                 self._active_voices.pop(0)
             self._active_voices.append(voice)
 
@@ -442,15 +474,20 @@ class AudioEngine:
         """Triggers electric spark crackle when pieces are magnetically attracted."""
         voice = CyberSFXVoice(sfx_type="lightning", sample_rate=self.sample_rate)
         with self._lock:
-            if len(self._active_voices) > 32:
+            if len(self._active_voices) >= 32:
                 self._active_voices.pop(0)
             self._active_voices.append(voice)
 
     def play_fusion_burst(self) -> None:
         """Triggers epic full guitar power chord strum + chime when pieces fuse."""
         for str_idx in range(6):
-            self.play_guitar(string_idx=str_idx, chord_name="C", velocity=0.88)
+            self.play_guitar(string_idx=str_idx, chord_name="G", velocity=0.88)
         self.play_shape_lock()
+
+    def get_active_voice_count(self) -> int:
+        """Thread-safe query of currently playing synthesizer voices."""
+        with self._lock:
+            return len(self._active_voices)
 
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info: dict, status: sd.CallbackFlags) -> None:
         """
@@ -470,6 +507,10 @@ class AudioEngine:
                 if not voice.is_finished():
                     still_active.append(voice)
             self._active_voices = still_active
+
+        # Numerical safety: sanitize any non-finite values (NaN / Inf)
+        if not np.all(np.isfinite(mix_buffer)):
+            np.nan_to_num(mix_buffer, copy=False)
 
         # Master soft-limiting via hyperbolic tangent to guarantee zero hard-clipping
         np.tanh(mix_buffer, out=outdata)
