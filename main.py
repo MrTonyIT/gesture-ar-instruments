@@ -231,6 +231,10 @@ class GestureARApp:
                     else:
                         self.hand_tracker.filter_mode = "one_euro"
                         logger.info("Hand tracking switched to 1€ ADAPTIVE FILTER (Cinema-smooth & jitter-free)")
+                elif key in (ord("p"), ord("P")):
+                    # Open native hardware camera properties dialog (50/60Hz anti-flicker, exposure, gain)
+                    logger.info("Requesting hardware camera properties dialog [P]...")
+                    self.camera.open_settings_dialog()
                 elif self.guitar is not None:
                     if key in (ord("1"), ord("c"), ord("C")):
                         self.guitar.active_chord = "C"
@@ -668,8 +672,8 @@ class GestureARApp:
         )
         cv2.putText(
             frame,
-            "Quick: [L] LOCK | [R] RESET | [M] AI | [F] RIG | [X] EXIT",
-            (w - 435, h - 7),
+            "Quick: [L] LOCK | [R] RESET | [M] AI | [F] RIG | [P] CAM | [X] EXIT",
+            (w - 495, h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.36,
             (0, 220, 255),

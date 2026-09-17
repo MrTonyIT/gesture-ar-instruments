@@ -182,6 +182,15 @@ class ThreadedCamera:
         )
         return canvas
 
+    def open_settings_dialog(self) -> None:
+        """Opens native Windows Camera Properties dialog to configure 50/60Hz, exposure, gain, etc."""
+        if self.cap is not None and self.cap.isOpened():
+            try:
+                self.cap.set(cv2.CAP_PROP_SETTINGS, 1.0)
+                logger.info("Triggered Windows Camera Properties dialog.")
+            except Exception as e:
+                logger.warning("Could not open hardware camera settings dialog: %s", e)
+
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         """Safely returns the most recently captured frame without redundant copying."""
         with self._lock:
