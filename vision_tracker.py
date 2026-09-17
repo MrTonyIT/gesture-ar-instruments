@@ -109,6 +109,8 @@ class ThreadedCamera:
         self._current_timestamp: float = 0.0
 
         self._lock = threading.Lock()
+        self._cap_io_lock = threading.Lock()
+        self._settings_requested = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._sim_phase: float = 0.0
         self._released: bool = False
@@ -199,11 +201,19 @@ class ThreadedCamera:
         """Background thread target continuously grabbing fresh frames with zero hardware backlog."""
         while self.is_running:
             if not self.is_simulation and self.cap is not None and self.cap.isOpened():
+                if self._settings_requested.is_set():
+                    time.sleep(0.005)
+                    continue
+
                 t0 = time.perf_counter()
-                grabbed = self.cap.grab()
+                with self._cap_io_lock:
+                    grabbed = self.cap.grab()
+                    if grabbed:
+                        ret, frame = self.cap.retrieve()
+                    else:
+                        ret, frame = False, None
+                t1 = time.perf_counter()
                 if grabbed:
-                    ret, frame = self.cap.retrieve()
-                    t1 = time.perf_counter()
                     self.hw_capture_latency_ms = 0.90 * self.hw_capture_latency_ms + 0.10 * ((t1 - t0) * 1000.0)
                     if ret and frame is not None:
                         now = time.perf_counter()
@@ -301,17 +311,21 @@ class ThreadedCamera:
             logger.warning("Camera properties dialog [P] is only supported on Windows.")
             return False
 
+        self._settings_requested.set()
         try:
-            res = self.cap.set(cv2.CAP_PROP_SETTINGS, 1.0)
-            if res:
-                logger.info("Triggered Windows DirectShow camera properties dialog.")
-                return True
-            else:
-                logger.warning("OpenCV CAP_PROP_SETTINGS call returned False for device %s.", self.src)
-                return False
+            with self._cap_io_lock:
+                res = self.cap.set(cv2.CAP_PROP_SETTINGS, 1.0)
+                if res:
+                    logger.info("Triggered Windows DirectShow camera properties dialog.")
+                    return True
+                else:
+                    logger.warning("OpenCV CAP_PROP_SETTINGS call returned False for device %s.", self.src)
+                    return False
         except Exception as e:
             logger.warning("Could not open hardware camera settings dialog: %s", e)
             return False
+        finally:
+            self._settings_requested.clear()
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         """Safely returns the most recently captured frame without redundant copying."""
@@ -345,7 +359,8 @@ class ThreadedCamera:
             if not self._released:
                 self._released = True
                 try:
-                    self.cap.release()
+                    with self._cap_io_lock:
+                        self.cap.release()
                 except Exception as e:
                     logger.debug("Error releasing VideoCapture: %s", e)
                 finally:
@@ -621,10 +636,23 @@ class HandTracker:
         else:
             return OneEuroFilter(min_cutoff=1.0, beta=30.0, d_cutoff=1.0)
 
-    def set_filter_mode(self, mode: str) -> None:
-        """Dynamically switches filter mode and resets existing filter states."""
-        self.filter_mode = mode
+    def reset_temporal_state(self) -> None:
+        """
+        Clears all temporal velocity, measurement timestamps, smoothed history,
+        and active filter instances across pipeline transitions.
+        """
         self._filters.clear()
+        self._smoothed_landmarks.clear()
+        self._prev_timestamps.clear()
+        self._prev_fingertip_px.clear()
+        self._prev_wrist_px.clear()
+
+    def set_filter_mode(self, mode: str) -> None:
+        """Dynamically switches filter mode and resets existing filter and temporal states."""
+        if mode == self.filter_mode:
+            return
+        self.filter_mode = mode
+        self.reset_temporal_state()
         logger.info("HandTracker filter mode switched to: %s", mode)
 
     def set_model_complexity(self, complexity: int) -> None:
@@ -634,6 +662,7 @@ class HandTracker:
         self.model_complexity = complexity
         if getattr(self, "init_mediapipe", True) and self.mp_hands is not None:
             self._init_mp_hands()
+        self.reset_temporal_state()
 
     def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """
@@ -819,6 +848,13 @@ class AsyncHandTracker:
         self.inference_latency_ms: float = 0.0
         self.stale_frames_skipped: int = 0
 
+    def reset_temporal_state(self) -> None:
+        """Clears all temporal velocity and smoothing history across pipeline transitions."""
+        with self._config_lock:
+            self.tracker.reset_temporal_state()
+        with self._snapshot_lock:
+            self._latest_hands = []
+
     @property
     def filter_mode(self) -> str:
         with self._config_lock:
@@ -831,6 +867,8 @@ class AsyncHandTracker:
     def set_filter_mode(self, mode: str) -> None:
         with self._config_lock:
             self.tracker.set_filter_mode(mode)
+        with self._snapshot_lock:
+            self._latest_hands = []
 
     @property
     def model_complexity(self) -> int:
@@ -845,6 +883,8 @@ class AsyncHandTracker:
         """Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full)."""
         with self._config_lock:
             self.tracker.set_model_complexity(complexity)
+        with self._snapshot_lock:
+            self._latest_hands = []
 
     def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """Direct synchronous process fallback."""

@@ -126,3 +126,92 @@ def test_tracker_controls_and_kinematics(app):
     test_hands = app.async_tracker.get_latest_hands(time.perf_counter(), extrapolate=True)
     assert isinstance(test_hands, list)
 
+
+def test_key_dispatch_and_lowercase_r_no_diagnostics_collision(app):
+    """
+    Verifies that lowercase 'r' (ASCII 114) unequivocally resets application state to IDLE
+    and cannot reach diagnostics HUD, while F3, Tab, and backtick toggle diagnostics.
+    Also proves every ordinary ASCII control key has an unambiguous action without collisions.
+    """
+    from instruments import Guitar
+    from main import F3_RAW_KEYS, FILTER_CYCLE_KEYS, GUITAR_KEY_CHORD_MAP
+
+    # 1. Test lowercase 'r' (114) and uppercase 'R' (82)
+    app.show_diagnostics = False
+    app.gesture_engine.state = AppState.PIANO_ACTIVE
+    action_lower_r = app.handle_key(114)  # ord('r') == 114
+    assert action_lower_r == "RESET"
+    assert app.show_diagnostics is False  # MUST NOT toggle diagnostics!
+    assert app.gesture_engine.state == AppState.IDLE
+
+    app.gesture_engine.state = AppState.GUITAR_ACTIVE
+    action_upper_r = app.handle_key(ord("R"))
+    assert action_upper_r == "RESET"
+    assert app.show_diagnostics is False
+    assert app.gesture_engine.state == AppState.IDLE
+
+    # 2. Test Diagnostics toggles (F3 raw keys, Tab 9, backtick 96)
+    initial_diag = app.show_diagnostics
+    for f3_code in F3_RAW_KEYS:
+        action = app.handle_key(f3_code)
+        assert action == "DIAGNOSTICS"
+        assert app.show_diagnostics != initial_diag
+        initial_diag = app.show_diagnostics
+
+    action_tab = app.handle_key(9)
+    assert action_tab == "DIAGNOSTICS"
+    assert app.show_diagnostics != initial_diag
+    initial_diag = app.show_diagnostics
+
+    action_backtick = app.handle_key(ord("`"))
+    assert action_backtick == "DIAGNOSTICS"
+    assert app.show_diagnostics != initial_diag
+
+    # 3. Test Exit keys: q, Q, ESC (27)
+    assert app.handle_key(ord("q")) == "EXIT"
+    assert app.handle_key(ord("Q")) == "EXIT"
+    assert app.handle_key(27) == "EXIT"
+    assert app.dispatch_key(ord("q")) is False
+    assert app.dispatch_key(ord("Q")) is False
+    assert app.dispatch_key(27) is False
+    assert app.dispatch_key(ord("r")) is True
+
+    # 4. Test Filter cycle keys: k, K
+    for k_key in FILTER_CYCLE_KEYS:
+        assert app.handle_key(k_key) == "FILTER"
+
+    # 5. Test Quality profile keys: v, V
+    assert app.handle_key(ord("v")) == "QUALITY"
+    assert app.handle_key(ord("V")) == "QUALITY"
+
+    # 6. Test Model complexity keys: m, M
+    assert app.handle_key(ord("m")) == "MODEL_COMPLEXITY"
+    assert app.handle_key(ord("M")) == "MODEL_COMPLEXITY"
+
+    # 7. Test Camera settings keys: p, P
+    assert app.handle_key(ord("p")) == "CAMERA_SETTINGS"
+    assert app.handle_key(ord("P")) == "CAMERA_SETTINGS"
+
+    # 8. Test Guitar chord keys when guitar is active
+    app.guitar = Guitar(zones=None, audio_engine=app.audio_engine)
+    for key_code, expected_chord in GUITAR_KEY_CHORD_MAP.items():
+        act = app.handle_key(key_code)
+        assert act == "GUITAR_CHORD", f"Key {chr(key_code)} ({key_code}) failed to dispatch GUITAR_CHORD"
+        assert app.guitar.active_chord == expected_chord
+
+    # 9. Verify no collision among all ordinary ASCII control keys
+    control_actions = {
+        ord("q"): "EXIT", ord("Q"): "EXIT", 27: "EXIT",
+        ord("r"): "RESET", ord("R"): "RESET",
+        ord("k"): "FILTER", ord("K"): "FILTER",
+        ord("v"): "QUALITY", ord("V"): "QUALITY",
+        ord("m"): "MODEL_COMPLEXITY", ord("M"): "MODEL_COMPLEXITY",
+        ord("p"): "CAMERA_SETTINGS", ord("P"): "CAMERA_SETTINGS",
+        ord("`"): "DIAGNOSTICS", 9: "DIAGNOSTICS",
+    }
+    for k, expected_action in control_actions.items():
+        app.guitar = None
+        act = app.handle_key(k)
+        assert act == expected_action, f"Key {k} yielded {act}, expected {expected_action}"
+
+

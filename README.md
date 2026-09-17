@@ -201,10 +201,11 @@ python -m ruff check .
 | **Strum Guitar** | Thumb (4) or Index (8) downward stroke | Air Guitar | Strums 6 projected strings with acoustic resonance |
 | **Diagnostics** | `F3`, `Tab`, or `` ` `` | Telemetry HUD | Toggles developer diagnostics panel |
 | **Quality Mode** | `V` key | Application | Cycles `HIGH` $\to$ `BALANCED` $\to$ `LOW` |
+| **Model Complexity** | `M` key | Hand Tracking | Toggles `ULTRA (1)` $\leftrightarrow$ `HYPER-SPEED (0)` |
 | **Tracking Filter** | `K` key | Hand Tracking | Cycles `1-Euro` $\to$ `Deadband` $\to$ `EMA` $\to$ `Raw` |
 | **Camera Settings** | `P` key | Camera | Opens native camera properties dialog (Windows DirectShow only) |
-| **Reset State** | Hold `[RESET]` button (0.7s) | Application | Resets state machine to `IDLE` |
-| **Exit** | Hold `[EXIT]` button (3.0s) or `ESC` | Application | Gracefully releases all hardware resources |
+| **Reset State** | `r` / `R` key | Application | Resets state machine to `IDLE` |
+| **Exit** | `q` / `Q` or `ESC` | Application | Gracefully releases all hardware resources |
 
 ---
 
@@ -243,7 +244,7 @@ gesture-ar-instruments/
 ├── vision_tracker.py            # MediaPipe Hands with pluggable BaseFilter hierarchy
 ├── pyproject.toml               # PEP 517/621 project configuration & tool configs
 ├── constraints.txt              # CI-verified direct dependency constraints for reproduction
-├── requirements.txt             # Core runtime dependencies (flexible declarations)
+├── requirements.txt             # Exact pinned core runtime dependencies for release
 ├── requirements-dev.txt         # Development & test tooling (pytest, ruff)
 ├── LICENSE                      # MIT Open Source License
 └── README.md                    # Project documentation

@@ -387,6 +387,10 @@ class Piano:
             px_ymax = int(round(self.NORM_YMAX * h))
             self._build_keyboard(px_xmin, px_ymin, px_xmax, px_ymax)
 
+    def reset_motion_state(self) -> None:
+        """Clears held-finger tracking state across tracking pipeline transitions."""
+        self._finger_held_keys.clear()
+
     def update(
         self,
         hands: List[HandData],
@@ -644,6 +648,11 @@ class Guitar:
         self._prev_right_timestamp: Optional[float] = None
         self._last_vibe_time: Optional[float] = None
 
+        # Gesture chord arbitration state (event-based transitions)
+        self._prev_touched_chord: Optional[str] = None
+        self._prev_pinched_chord: Optional[str] = None
+        self._prev_lh_finger_count: Optional[int] = None
+
         # 3. Setup strings in sprite local coordinate system
         self.strings: List[ProjectedGuitarString] = []
         self._setup_local_strings()
@@ -756,6 +765,14 @@ class Guitar:
             self.active_chord = chord_name
             return True
         return False
+
+    def reset_motion_state(self) -> None:
+        """
+        Clears strumming motion state across tracking pipeline transitions
+        without resetting chord, pose anchors, or instrument state.
+        """
+        self._prev_strum_finger_positions.clear()
+        self._prev_right_timestamp = None
 
     def update(
         self,
@@ -884,27 +901,56 @@ class Guitar:
                 if touched_chord is not None:
                     break
 
-            # Prioritized Chord Resolution:
-            # 1. Direct Touch on top boxes
+            # Prioritized Chord Resolution (EVENT-BASED):
+            # 1. Direct Touch on top chord boxes: deliberate selection event
             if touched_chord is not None:
-                self.active_chord = touched_chord
-            # 2. Deliberate Thumb Pinch
-            elif pinched_chord is not None:
-                self.active_chord = pinched_chord
-            # 3. Finger Count (1 = C, 2 = G, 3 = Am, 4 = Em)
-            elif finger_count == 1:
-                self.active_chord = "C"
-            elif finger_count == 2:
-                self.active_chord = "G"
-            elif finger_count == 3:
-                self.active_chord = "Am"
-            elif finger_count >= 4:
-                self.active_chord = "Em"
-            # 4. If 0 fingers: keep previous active chord
+                if touched_chord != self._prev_touched_chord:
+                    self.set_chord(touched_chord)
+                self._prev_touched_chord = touched_chord
+            else:
+                self._prev_touched_chord = None
+
+            # 2. Deliberate Thumb Pinch: deliberate selection event
+            if pinched_chord is not None:
+                if pinched_chord != self._prev_pinched_chord:
+                    self.set_chord(pinched_chord)
+                self._prev_pinched_chord = pinched_chord
+            else:
+                self._prev_pinched_chord = None
+
+            # 3. Finger Count Chord Selection: occurs when finger-count gesture CHANGES, not every frame
+            if self._prev_lh_finger_count is None:
+                # Initial tracking acquisition
+                if touched_chord is None and pinched_chord is None:
+                    if finger_count == 1:
+                        self.set_chord("C")
+                    elif finger_count == 2:
+                        self.set_chord("G")
+                    elif finger_count == 3:
+                        self.set_chord("Am")
+                    elif finger_count >= 4:
+                        self.set_chord("Em")
+                self._prev_lh_finger_count = finger_count
+            elif finger_count != self._prev_lh_finger_count:
+                # Finger-count gesture transitioned to a new count
+                if touched_chord is None and pinched_chord is None:
+                    if finger_count == 1:
+                        self.set_chord("C")
+                    elif finger_count == 2:
+                        self.set_chord("G")
+                    elif finger_count == 3:
+                        self.set_chord("Am")
+                    elif finger_count >= 4:
+                        self.set_chord("Em")
+                self._prev_lh_finger_count = finger_count
+            # else: finger_count is unchanged; an unchanged left-hand pose does not overwrite keyboard or touch selections
         else:
             self.lh_landmarks = None
             self.lh_finger_count = 0
             self.extended_finger_flags = [False, False, False, False]
+            self._prev_touched_chord = None
+            self._prev_pinched_chord = None
+            self._prev_lh_finger_count = None
 
         # 5. Right Hand Strumming: Only Thumb (4) and Index (8)
         if right_hand is not None:

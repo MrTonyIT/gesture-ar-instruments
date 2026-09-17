@@ -259,3 +259,106 @@ def test_guitar_keyboard_shortcut_f_and_filter_cycling_k():
     assert ord("K") not in GUITAR_KEY_CHORD_MAP
     assert ord("k") in FILTER_CYCLE_KEYS
     assert ord("K") in FILTER_CYCLE_KEYS
+
+
+def test_chord_input_source_arbitration_integration(guitar):
+    """
+    Deterministic integration tests for event-based chord input-source arbitration.
+    Proves:
+    1. one-finger gesture selects C;
+    2. keyboard F is then selected;
+    3. next frame with the SAME one-finger pose leaves chord at F;
+    4. changing gesture from one finger to two fingers intentionally switches to G;
+    5. keyboard 9 selects and persists as F;
+    6. direct-touch selection persists after leaving the box if no new gesture transition occurs;
+    7. all 9 keyboard chords still work.
+    """
+    from typing import Optional
+    from main import GUITAR_KEY_CHORD_MAP
+
+    shape = (720, 1280, 3)
+
+    def make_lh(finger_count: int, touch_xy: Optional[tuple[float, float]] = None) -> HandData:
+        wrist = np.array([300.0, 400.0], dtype=np.float32)
+        pts_px = np.zeros((21, 3), dtype=np.float32)
+        pts_px[:, :2] = wrist
+
+        # Hand scale reference: wrist (0) to Middle MCP (9)
+        pts_px[9, :2] = wrist + np.array([0.0, -80.0], dtype=np.float32)
+
+        # MCP coordinates for 4 long fingers
+        pts_px[6, :2] = wrist + np.array([-30.0, -60.0], dtype=np.float32)
+        pts_px[10, :2] = wrist + np.array([0.0, -60.0], dtype=np.float32)
+        pts_px[14, :2] = wrist + np.array([30.0, -60.0], dtype=np.float32)
+        pts_px[18, :2] = wrist + np.array([60.0, -60.0], dtype=np.float32)
+
+        # Extended vs folded tips: Index (8), Middle (12), Ring (16), Pinky (20)
+        tips_mcps = [(8, 6), (12, 10), (16, 14), (20, 18)]
+        for i, (tip_id, mcp_id) in enumerate(tips_mcps):
+            if i < finger_count:
+                pts_px[tip_id, :2] = wrist + np.array([-30.0 + i * 30.0, -120.0], dtype=np.float32)
+            else:
+                pts_px[tip_id, :2] = wrist + np.array([-30.0 + i * 30.0, -20.0], dtype=np.float32)
+
+        # Thumb (4) folded near base
+        pts_px[4, :2] = wrist + np.array([-40.0, -20.0], dtype=np.float32)
+
+        # Optional direct touch position override
+        if touch_xy is not None:
+            pts_px[8, :2] = [touch_xy[0], touch_xy[1]]
+
+        pts_norm = pts_px.copy()
+        pts_norm[:, 0] /= 1280.0
+        pts_norm[:, 1] /= 720.0
+
+        return HandData(
+            handedness="Left",
+            landmarks_norm=pts_norm,
+            landmarks_px=pts_px,
+            timestamp=0.0,
+        )
+
+    # 1. One-finger gesture selects C
+    lh_1 = make_lh(1)
+    guitar.update([lh_1], frame_shape=shape, current_time=0.10)
+    assert guitar.active_chord == "C", f"Expected C on initial 1-finger acquisition, got {guitar.active_chord}"
+
+    # 2. Keyboard F is then selected
+    assert guitar.set_chord("F") is True
+    assert guitar.active_chord == "F"
+
+    # 3. Next frame with the SAME one-finger pose leaves chord at F
+    guitar.update([lh_1], frame_shape=shape, current_time=0.12)
+    assert guitar.active_chord == "F", f"Unchanged 1-finger pose overwrote keyboard chord to {guitar.active_chord}"
+
+    # 4. Changing gesture from one finger to two fingers intentionally switches to G
+    lh_2 = make_lh(2)
+    guitar.update([lh_2], frame_shape=shape, current_time=0.14)
+    assert guitar.active_chord == "G", f"Expected transition to G on 2 fingers, got {guitar.active_chord}"
+
+    # 5. Keyboard 9 selects and persists as F
+    chord_9 = GUITAR_KEY_CHORD_MAP[ord("9")]
+    assert chord_9 == "F"
+    assert guitar.set_chord(chord_9) is True
+    assert guitar.active_chord == "F"
+    # Same 2-finger pose on next frame leaves chord at F
+    guitar.update([lh_2], frame_shape=shape, current_time=0.16)
+    assert guitar.active_chord == "F", f"Unchanged 2-finger pose overwrote keyboard [9] chord to {guitar.active_chord}"
+
+    # 6. Direct-touch selection persists after leaving the box if no new gesture transition occurs
+    bx1, by1, bx2, by2 = guitar.chord_boxes["Am"]
+    touch_pos = ((bx1 + bx2) / 2.0, (by1 + by2) / 2.0)
+    lh_touch = make_lh(2, touch_xy=touch_pos)
+    guitar.update([lh_touch], frame_shape=shape, current_time=0.18)
+    assert guitar.active_chord == "Am", f"Direct touch on Am failed: got {guitar.active_chord}"
+
+    # Leaving the box with same 2-finger pose
+    guitar.update([lh_2], frame_shape=shape, current_time=0.20)
+    assert guitar.active_chord == "Am", f"Chord reverted after leaving touch box to {guitar.active_chord}"
+
+    # 7. All 9 keyboard chords still work
+    for key_code in range(ord("1"), ord("9") + 1):
+        target_chord = GUITAR_KEY_CHORD_MAP[key_code]
+        assert guitar.set_chord(target_chord) is True
+        assert guitar.active_chord == target_chord
+

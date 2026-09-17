@@ -65,6 +65,11 @@ GUITAR_KEY_CHORD_MAP: MappingProxyType[int, str] = MappingProxyType({
 # Filter cycle keyboard shortcuts
 FILTER_CYCLE_KEYS: Tuple[int, ...] = (ord("k"), ord("K"))
 
+# Legitimate F3 platform-specific raw key codes from OpenCV waitKeyEx
+# Windows: 0x720000; Linux/X11: 0x120000, 7536752, 65472 (0xFFBE)
+# NOTE: ASCII 114 is deliberately excluded because 114 == ord("r")
+F3_RAW_KEYS: Tuple[int, ...] = (0x720000, 0x120000, 7536752, 65472)
+
 # MediaPipe Hand Skeleton connections (Pairs of landmark indices)
 HAND_CONNECTIONS = [
     # Palm
@@ -200,15 +205,127 @@ class GestureARApp:
         self.last_overflow_time: float = 0.0
         self.overflow_msg: str = ""
 
+    def _on_tracking_pipeline_changed(self) -> None:
+        """
+        Resets active instrument motion-collision state when an application-level
+        tracking pipeline switch occurs (filter mode, model complexity, or quality profile).
+        Preserves currently selected chord and instrument state.
+        """
+        if hasattr(self, "piano") and self.piano is not None:
+            self.piano.reset_motion_state()
+        if hasattr(self, "guitar") and self.guitar is not None:
+            self.guitar.reset_motion_state()
+
     def set_quality_profile(self, profile: str) -> None:
         """Applies explicit quality profile (HIGH, BALANCED, LOW)."""
         key = profile.upper()
         if key not in QUALITY_PROFILES:
             key = "HIGH"
+        old_mc = getattr(getattr(self, "quality_config", None), "model_complexity", None)
         self.quality_profile = key
         self.quality_config = QUALITY_PROFILES[key]
         if hasattr(self, "async_tracker") and self.async_tracker is not None:
             self.async_tracker.model_complexity = self.quality_config.model_complexity
+            if old_mc is not None and old_mc != self.quality_config.model_complexity:
+                self._on_tracking_pipeline_changed()
+
+    def handle_key(self, raw_key: int) -> Optional[str]:
+        """
+        Deterministic keyboard event handler for GestureARApp without requiring GUI.
+
+        Args:
+            raw_key: Full integer key code returned by cv2.waitKeyEx (or -1 if no key).
+
+        Returns:
+            Dispatched action string (e.g. 'EXIT', 'RESET', 'DIAGNOSTICS', etc.) or None.
+        """
+        if raw_key == -1:
+            return None
+
+        key = raw_key & 0xFF
+
+        # 1. Exit application
+        if key in (ord("q"), ord("Q"), 27):
+            logger.info("Exit key pressed (%s).", raw_key)
+            return "EXIT"
+
+        # 2. Developer Diagnostics HUD (F3, TAB=9, or backtick=`/96)
+        # Note: ASCII 114 is deliberately excluded because 114 == ord('r')
+        if raw_key in F3_RAW_KEYS or key in (ord("`"), 9):
+            self.show_diagnostics = not self.show_diagnostics
+            logger.info("Diagnostics HUD toggled: %s", "ON" if self.show_diagnostics else "OFF")
+            return "DIAGNOSTICS"
+
+        # 3. Manual Reset Shortcut (r/R) -> reset to IDLE
+        if key in (ord("r"), ord("R")):
+            self.gesture_engine.reset_to_idle()
+            self.piano = None
+            self.guitar = None
+            logger.info("Application state reset to IDLE via [R].")
+            return "RESET"
+
+        # 4. Visual Quality Profile (v/V)
+        if key in (ord("v"), ord("V")):
+            if self.quality_profile == "HIGH":
+                self.set_quality_profile("BALANCED")
+            elif self.quality_profile == "BALANCED":
+                self.set_quality_profile("LOW")
+            else:
+                self.set_quality_profile("HIGH")
+            logger.info("Visual Quality Profile switched to: %s", self.quality_profile)
+            return "QUALITY"
+
+        # 5. AI Model Complexity Toggle (m/M): ULTRA (1) vs HYPER-SPEED (0)
+        if key in (ord("m"), ord("M")):
+            new_mc = 0 if self.async_tracker.model_complexity == 1 else 1
+            self.async_tracker.model_complexity = new_mc
+            self._on_tracking_pipeline_changed()
+            mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
+            logger.info("AI tracking model switched to: %s", mode_lbl)
+            return "MODEL_COMPLEXITY"
+
+        # 6. Hand Tracking Filter Mode Cycle (k/K)
+        if key in FILTER_CYCLE_KEYS:
+            cur_mode = self.hand_tracker.filter_mode.lower()
+            if cur_mode == "one_euro":
+                self.hand_tracker.filter_mode = "deadband"
+                logger.info("Hand tracking switched to DEADBAND (Adaptive noise-gate)")
+            elif cur_mode in ("deadband", "zero_lag"):
+                self.hand_tracker.filter_mode = "ema"
+                logger.info("Hand tracking switched to EMA (Alpha=0.65 low-pass)")
+            elif cur_mode == "ema":
+                self.hand_tracker.filter_mode = "raw"
+                logger.info("Hand tracking switched to PURE RAW (Direct MediaPipe)")
+            else:
+                self.hand_tracker.filter_mode = "one_euro"
+                logger.info("Hand tracking switched to 1-EURO ADAPTIVE FILTER (Casiez et al. 2012)")
+            self._on_tracking_pipeline_changed()
+            return "FILTER"
+
+        # 7. Hardware Camera Properties Dialog (p/P)
+        if key in (ord("p"), ord("P")):
+            logger.info("Requesting hardware camera properties dialog [P]...")
+            opened = self.camera.open_settings_dialog()
+            if not opened:
+                logger.info(
+                    "Camera settings dialog [P] unavailable. "
+                    "On Windows, launch with '--camera-backend dshow' to enable hardware camera controls."
+                )
+            return "CAMERA_SETTINGS"
+
+        # 8. Guitar Chord Selection (Keys 1-9, C, G, D, A, E, F)
+        if self.guitar is not None and key in GUITAR_KEY_CHORD_MAP:
+            ch = GUITAR_KEY_CHORD_MAP[key]
+            self.guitar.set_chord(ch)
+            logger.info("Guitar chord set to %s via keyboard hotkey", ch)
+            return "GUITAR_CHORD"
+
+        return None
+
+    def dispatch_key(self, raw_key: int) -> bool:
+        """Dispatches keyboard event; returns False if application should terminate, True otherwise."""
+        action = self.handle_key(raw_key)
+        return action != "EXIT"
 
     def run(self) -> None:
         """Main application lifecycle loop."""
@@ -326,7 +443,6 @@ class GestureARApp:
 
                 # 9. Key Handling & OS Event Polling
                 raw_key = cv2.waitKeyEx(1)
-                key = raw_key & 0xFF if raw_key != -1 else -1
 
                 # 10. Frame rate calculation & loop telemetry (measures complete pipeline including presentation)
                 now = time.perf_counter()
@@ -338,61 +454,8 @@ class GestureARApp:
                 total_frame_ms = (now - loop_start) * 1000.0
                 self.telemetry["total_ms"] = 0.90 * self.telemetry["total_ms"] + 0.10 * total_frame_ms
 
-                if key in (ord("q"), ord("Q"), 27):
-                    logger.info("Exit key pressed.")
+                if not self.dispatch_key(raw_key):
                     break
-                elif raw_key in (0x720000, 114, 0x120000, 7536752) or key in (ord("`"), 9):
-                    # F3, TAB (9), or backtick (`) toggles Developer Diagnostics HUD
-                    self.show_diagnostics = not self.show_diagnostics
-                    logger.info("Diagnostics HUD toggled: %s", "ON" if self.show_diagnostics else "OFF")
-                elif key in (ord("v"), ord("V")):
-                    # Cycle visual quality profile: HIGH -> BALANCED -> LOW -> HIGH
-                    if self.quality_profile == "HIGH":
-                        self.set_quality_profile("BALANCED")
-                    elif self.quality_profile == "BALANCED":
-                        self.set_quality_profile("LOW")
-                    else:
-                        self.set_quality_profile("HIGH")
-                    logger.info("Visual Quality Profile switched to: %s", self.quality_profile)
-                elif key in (ord("r"), ord("R")):
-                    # Manual reset shortcut
-                    self.gesture_engine.reset_to_idle()
-                    self.piano = None
-                    self.guitar = None
-                elif key in (ord("m"), ord("M")):
-                    # Toggle AI model complexity: ULTRA (1) vs HYPER-SPEED (0)
-                    new_mc = 0 if self.async_tracker.model_complexity == 1 else 1
-                    self.async_tracker.model_complexity = new_mc
-                    mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
-                    logger.info("AI tracking model switched to: %s", mode_lbl)
-                elif key in FILTER_CYCLE_KEYS:
-                    # Cycle hand tracking filter mode: 1-Euro -> deadband -> ema -> raw -> 1-Euro
-                    cur_mode = self.hand_tracker.filter_mode.lower()
-                    if cur_mode == "one_euro":
-                        self.hand_tracker.filter_mode = "deadband"
-                        logger.info("Hand tracking switched to DEADBAND (Adaptive noise-gate)")
-                    elif cur_mode in ("deadband", "zero_lag"):
-                        self.hand_tracker.filter_mode = "ema"
-                        logger.info("Hand tracking switched to EMA (Alpha=0.65 low-pass)")
-                    elif cur_mode == "ema":
-                        self.hand_tracker.filter_mode = "raw"
-                        logger.info("Hand tracking switched to PURE RAW (Direct MediaPipe)")
-                    else:
-                        self.hand_tracker.filter_mode = "one_euro"
-                        logger.info("Hand tracking switched to 1-EURO ADAPTIVE FILTER (Casiez et al. 2012)")
-                elif key in (ord("p"), ord("P")):
-                    # Open native hardware camera properties dialog
-                    logger.info("Requesting hardware camera properties dialog [P]...")
-                    opened = self.camera.open_settings_dialog()
-                    if not opened:
-                        logger.info(
-                            "Camera settings dialog [P] unavailable. "
-                            "On Windows, launch with '--camera-backend dshow' to enable hardware camera controls."
-                        )
-                elif self.guitar is not None and key in GUITAR_KEY_CHORD_MAP:
-                    ch = GUITAR_KEY_CHORD_MAP[key]
-                    self.guitar.set_chord(ch)
-                    logger.info("Guitar chord set to %s via keyboard hotkey", ch)
 
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt caught.")

@@ -87,6 +87,11 @@ jobs:
           gesture-ar --help
           python -c "import main; print('Installed location:', main.__file__)"
 
+      - name: Windows RUN.bat Launcher Smoke Test
+        shell: cmd
+        run: |
+          RUN.bat --help
+
       - name: Syntax and Bytecode Compilation
         run: |
           python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
