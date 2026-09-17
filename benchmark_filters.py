@@ -420,7 +420,7 @@ def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.cs
         "overshoot_pct",
     ]
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(results_table)
 
