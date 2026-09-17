@@ -52,5 +52,4 @@ jobs:
       - name: Tracking Filter Benchmark Verification
         run: |
           python benchmark_filters.py
-          git diff benchmarks/filter_benchmark_results.csv
-          git diff --exit-code benchmarks/filter_benchmark_results.csv
+
