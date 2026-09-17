@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gesture-ar-instruments"
+version = "1.0.0"
+description = "Real-Time Spatial AR Musical Instruments (Air Guitar & Piano) with MediaPipe Hand Tracking and Procedural Synthesizer"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "MrTonyIT"}
+]
+keywords = [
+    "augmented-reality",
+    "mediapipe",
+    "opencv",
+    "audio-synthesis",
+    "gesture-recognition",
+    "air-guitar",
+    "virtual-piano",
+    "computer-vision",
+    "human-computer-interaction"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
+dependencies = [
+    "opencv-python>=4.8.0",
+    "mediapipe>=0.10.0,<0.10.15",
+    "numpy>=1.24.0",
+    "sounddevice>=0.4.6",
+    "scipy>=1.10.0"
+]
+
+[project.scripts]
+gesture-ar = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/MrTonyIT/gesture-ar-instruments"
+Repository = "https://github.com/MrTonyIT/gesture-ar-instruments.git"
+"Bug Tracker" = "https://github.com/MrTonyIT/gesture-ar-instruments/issues"
