@@ -209,11 +209,11 @@ def test_benchmark_artifact_consistency():
 
 
 def test_mediapipe_integration_smoke():
-    """Integration smoke test verifying that MediaPipe library is importable."""
+    """Integration smoke test verifying that MediaPipe Tasks library is importable."""
     import mediapipe as mp
     assert mp is not None
-    if hasattr(mp, "solutions"):
-        assert hasattr(mp.solutions, "hands")
+    from mediapipe.tasks.python import vision
+    assert hasattr(vision, "HandLandmarker")
 
 
 

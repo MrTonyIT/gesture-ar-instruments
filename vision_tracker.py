@@ -633,6 +633,15 @@ class HandTracker:
         if os.path.exists(cwd_pkg):
             return cwd_pkg
 
+        try:
+            import models
+            if hasattr(models, "__file__") and models.__file__:
+                mod_task = os.path.join(os.path.dirname(os.path.abspath(models.__file__)), "hand_landmarker.task")
+                if os.path.exists(mod_task):
+                    return mod_task
+        except Exception:
+            pass
+
         raise RuntimeError(
             f"MediaPipe HandLandmarker model asset not found at '{candidate_pkg}'. "
             "Ensure models/hand_landmarker.task exists or set GESTURE_AR_MODEL_PATH."
@@ -653,7 +662,13 @@ class HandTracker:
             raise RuntimeError("MediaPipe Tasks vision API is unavailable.")
 
         model_file = self._resolve_model_path()
-        base_options = mp_tasks.BaseOptions(model_asset_path=model_file)
+        with open(model_file, "rb") as f:
+            model_bytes = f.read()
+
+        base_options = mp_tasks.BaseOptions(
+            model_asset_buffer=model_bytes,
+            delegate=mp_tasks.BaseOptions.Delegate.CPU,
+        )
 
         # Quality/complexity mapping
         det_conf = 0.65 if self.model_complexity == 1 else 0.50
