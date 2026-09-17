@@ -34,7 +34,6 @@ env/
 env.bak/
 venv.bak/
 fresh-env/
-fresh-env-win/
 
 # IDE & Editors
 .idea/

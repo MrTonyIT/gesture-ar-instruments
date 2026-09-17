@@ -108,19 +108,57 @@ jobs:
       - name: Windows Isolated Fresh-Env Install & External Directory Smoke Test
         shell: powershell
         run: |
-          python -m venv fresh-env-win
-          .\fresh-env-win\Scripts\python -m pip install --upgrade pip
-          .\fresh-env-win\Scripts\pip install .
-          .\fresh-env-win\Scripts\python -m pip check
-          $envPython = (Resolve-Path .\fresh-env-win\Scripts\python.exe).Path
-          $envGestureAr = (Resolve-Path .\fresh-env-win\Scripts\gesture-ar.exe).Path
-          $env:REPO_ROOT = (Get-Location).Path
-          $tempDir = [System.IO.Path]::GetTempPath()
-          Set-Location $tempDir
-          & $envGestureAr --help
-          & $envPython -c "import os, main; print('Resolved main.__file__:', main.__file__); mf = os.path.abspath(main.__file__).lower(); rf = os.path.abspath(os.environ['REPO_ROOT']).lower(); assert 'site-packages' in mf, f'main not in site-packages: {main.__file__}'; assert not mf.startswith(rf), f'main imported from git checkout: {main.__file__}'"
-          & $envPython -c "import mediapipe as mp; assert hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'), 'Missing mp.solutions.hands'; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.hands is not None, 'MediaPipe Hands graph failed to initialize'; tracker.close(); print('Windows MediaPipe Hands graph initialized and closed cleanly in fresh env!')"
-          Set-Location $env:REPO_ROOT
+          $ErrorActionPreference = "Stop"
+          function Invoke-Native {
+              param([scriptblock]$Cmd)
+              & $Cmd
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Native command failed with exit code $LASTEXITCODE"
+              }
+          }
+
+          $runnerTemp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+          $venvDir = Join-Path $runnerTemp "gesture-ar-fresh-env"
+          if (Test-Path $venvDir) {
+              Remove-Item -Recurse -Force $venvDir
+          }
+
+          $repoRoot = (Get-Location).Path
+          $env:REPO_ROOT = $repoRoot
+          $env:VENV_DIR = $venvDir
+
+          # 1. Create fresh venv outside the repository
+          Invoke-Native { python -m venv $venvDir }
+
+          $venvPython = Join-Path $venvDir "Scripts\python.exe"
+          $venvPip = Join-Path $venvDir "Scripts\pip.exe"
+          $venvGestureAr = Join-Path $venvDir "Scripts\gesture-ar.exe"
+
+          # 2. Upgrade pip and install package
+          Invoke-Native { & $venvPython -m pip install --upgrade pip }
+          Invoke-Native { & $venvPip install . }
+
+          # 3. Verify dependency tree integrity
+          Invoke-Native { & $venvPython -m pip check }
+
+          # 4. Change working directory to a separate temporary directory outside repo and venv
+          $workDir = Join-Path $runnerTemp "gesture-ar-external-workdir"
+          if (Test-Path $workDir) {
+              Remove-Item -Recurse -Force $workDir
+          }
+          New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+          Set-Location $workDir
+
+          # 5. Verify console script entry point
+          Invoke-Native { & $venvGestureAr --help }
+
+          # 6. Verify main.__file__ resolves from fresh venv site-packages and NOT from git checkout
+          Invoke-Native { & $venvPython -c "import os, sys, main; print('Resolved main.__file__:', main.__file__); mf = os.path.abspath(main.__file__).lower(); vf = os.path.abspath(os.environ['VENV_DIR']).lower(); rf = os.path.abspath(os.environ['REPO_ROOT']).lower(); site_pkg = os.path.join(vf, 'lib', 'site-packages').lower(); assert site_pkg in mf, f'main.__file__ ({main.__file__}) is not in site-packages ({site_pkg})'; assert not mf.startswith(rf), f'main.__file__ ({main.__file__}) is inside git checkout ({rf})!'; assert mf.startswith(vf), f'main.__file__ ({main.__file__}) is not inside venv ({vf})!'; print('Package resolution assertion passed: imported strictly from isolated site-packages!')" }
+
+          # 7. Verify MediaPipe Hands graph initialization and clean shutdown in fresh environment
+          Invoke-Native { & $venvPython -c "import mediapipe as mp; assert hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'), 'Missing mp.solutions.hands legacy API'; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.hands is not None, 'MediaPipe Hands graph failed to initialize'; tracker.close(); print('Windows MediaPipe Hands graph initialized and closed cleanly in fresh env!')" }
+
+          Set-Location $repoRoot
 
 
 
