@@ -354,6 +354,11 @@ class AudioEngine:
         self.audio_available = False
         self.current_peak: float = 0.0
 
+        # Hardware audio stream telemetry
+        self.underflow_count: int = 0
+        self.overflow_count: int = 0
+        self.last_callback_status: str = ""
+
     def start(self) -> bool:
         """
         Initializes and starts the audio output stream.
@@ -492,27 +497,42 @@ class AudioEngine:
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info: dict, status: sd.CallbackFlags) -> None:
         """
         Real-time PortAudio high-priority callback.
-        Accumulates all active voices, applies soft clipping, and purges dead voices.
+        Accumulates active voices outside the lock to minimize contention, applies soft clipping,
+        and records hardware buffer status telemetry.
         """
         if status:
+            if status.output_underflow:
+                self.underflow_count += 1
+            if status.output_overflow:
+                self.overflow_count += 1
+            self.last_callback_status = str(status)
             logger.debug("Sounddevice callback status: %s", status)
 
-        mix_buffer = np.zeros((frames, 2), dtype=np.float32)
-
+        # Snapshot active voices under lock in sub-microsecond time
         with self._lock:
-            still_active: List[Voice] = []
-            for voice in self._active_voices:
-                rendered = voice.render(frames)
-                mix_buffer += rendered
-                if not voice.is_finished():
-                    still_active.append(voice)
-            self._active_voices = still_active
+            voices_to_render = self._active_voices[:]
+
+        mix_buffer = np.zeros((frames, 2), dtype=np.float32)
+        finished_voices: List[Voice] = []
+
+        # Synthesis DSP computation executes outside lock
+        for voice in voices_to_render:
+            rendered = voice.render(frames)
+            mix_buffer += rendered
+            if voice.is_finished():
+                finished_voices.append(voice)
+
+        # Purge finished voices briefly under lock
+        if finished_voices:
+            with self._lock:
+                finished_set = set(finished_voices)
+                self._active_voices = [v for v in self._active_voices if v not in finished_set]
 
         # Numerical safety: sanitize any non-finite values (NaN / Inf)
         if not np.all(np.isfinite(mix_buffer)):
             np.nan_to_num(mix_buffer, copy=False)
 
-        # Master soft-limiting via hyperbolic tangent to guarantee zero hard-clipping
+        # Master soft-limiting via hyperbolic tangent to prevent clipping
         np.tanh(mix_buffer, out=outdata)
         peak = float(np.max(np.abs(outdata)))
         self.current_peak = 0.82 * self.current_peak + 0.18 * peak

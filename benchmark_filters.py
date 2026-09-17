@@ -6,22 +6,19 @@ Deterministic Empirical Benchmark Suite for Hand Tracking Filters.
 Evaluates:
 - RawFilter (Baseline direct pass-through)
 - EMAFilter (Exponential Moving Average, alpha=0.65)
-- DeadbandFilter (Adaptive Zero-Lag Noise Gate)
-- OneEuroFilter (Casiez et al. 2012 Adaptive Low-Pass)
+- DeadbandFilter (Adaptive Zero-Lag Noise Gate: deadband=0.0025, motion_thresh=0.0080)
+- OneEuroFilter (Casiez et al. 2012: min_cutoff=1.0, beta=30.0, d_cutoff=1.0)
 
-Trajectories Evaluated:
-1. Stationary Noisy: Static position with realistic camera sensor noise.
-2. Constant Velocity: Linear translation across frame with sensor noise.
-3. Sinusoidal Oscillation: 1.5 Hz cyclic gesture movement.
-4. Step Discontinuity: Sudden 0.3-unit coordinate jump to measure settling time.
-5. High-Speed Strum: 4.0 Hz rapid back-and-forth strumming gesture.
-
-Metrics Computed:
-- RMS Jitter (normalized units and px at 1080p)
-- Mean Absolute Error (MAE)
-- Maximum Tracking Error (Max Error)
-- Phase Lag (ms via cross-correlation peak)
-- Settling Time (ms to within 2% band on step input)
+Scientific Metric Definitions:
+- Position RMSE: Root-mean-square position error relative to ground-truth.
+- MAE: Mean absolute tracking error.
+- Max Error: Maximum single-sample absolute tracking error.
+- Stationary Jitter RMS: Standard deviation of static coordinate positions at 1080p.
+- Residual Noise RMS: Standard deviation of consecutive error differences with true motion subtracted.
+- Phase Lag (ms): Continuous phase shift measured via Fourier harmonic analysis at the motion frequency.
+- Detected Lag (frames): Whole-sample lag from discrete cross-correlation (resolution: +/- 8.33 ms at 60 Hz).
+- Settling Time (ms): Time required to enter and permanently stay within +/-2% of step magnitude.
+- Overshoot (%): Maximum transient excursion beyond target step level.
 """
 
 from __future__ import annotations
@@ -40,7 +37,7 @@ def generate_stationary_noisy(
     fps: float = 60.0,
     noise_std: float = 0.003,
     seed: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float | int]]:
     """Generates a stationary hand position with Gaussian sensor noise."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
@@ -49,7 +46,14 @@ def generate_stationary_noisy(
     ground_truth = np.full((n_samples, 21, 3), 0.5, dtype=np.float32)
     noise = rng.normal(0.0, noise_std, ground_truth.shape).astype(np.float32)
     noisy_input = ground_truth + noise
-    return timestamps, ground_truth, noisy_input
+    meta = {
+        "duration_s": duration,
+        "sample_count": n_samples,
+        "nominal_fps": fps,
+        "noise_std": noise_std,
+        "seed": seed,
+    }
+    return timestamps, ground_truth, noisy_input, meta
 
 
 def generate_constant_velocity(
@@ -58,7 +62,7 @@ def generate_constant_velocity(
     v: float = 0.20,  # 0.20 screen width per second
     noise_std: float = 0.002,
     seed: int = 43,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float | int]]:
     """Generates linear constant velocity motion across the frame."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
@@ -74,7 +78,14 @@ def generate_constant_velocity(
 
     noise = rng.normal(0.0, noise_std, ground_truth.shape).astype(np.float32)
     noisy_input = ground_truth + noise
-    return timestamps, ground_truth, noisy_input
+    meta = {
+        "duration_s": duration,
+        "sample_count": n_samples,
+        "nominal_fps": fps,
+        "noise_std": noise_std,
+        "seed": seed,
+    }
+    return timestamps, ground_truth, noisy_input, meta
 
 
 def generate_sinusoidal(
@@ -84,7 +95,7 @@ def generate_sinusoidal(
     amplitude: float = 0.20,
     noise_std: float = 0.002,
     seed: int = 44,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float | int]]:
     """Generates sinusoidal oscillatory gesture movement."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
@@ -99,7 +110,14 @@ def generate_sinusoidal(
 
     noise = rng.normal(0.0, noise_std, ground_truth.shape).astype(np.float32)
     noisy_input = ground_truth + noise
-    return timestamps, ground_truth, noisy_input
+    meta = {
+        "duration_s": duration,
+        "sample_count": n_samples,
+        "nominal_fps": fps,
+        "noise_std": noise_std,
+        "seed": seed,
+    }
+    return timestamps, ground_truth, noisy_input, meta
 
 
 def generate_step_discontinuity(
@@ -109,7 +127,7 @@ def generate_step_discontinuity(
     step_magnitude: float = 0.30,
     noise_std: float = 0.001,
     seed: int = 45,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float | int]]:
     """Generates an abrupt step displacement for transient settling time analysis."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
@@ -124,7 +142,14 @@ def generate_step_discontinuity(
 
     noise = rng.normal(0.0, noise_std, ground_truth.shape).astype(np.float32)
     noisy_input = ground_truth + noise
-    return timestamps, ground_truth, noisy_input
+    meta = {
+        "duration_s": duration,
+        "sample_count": n_samples,
+        "nominal_fps": fps,
+        "noise_std": noise_std,
+        "seed": seed,
+    }
+    return timestamps, ground_truth, noisy_input, meta
 
 
 def generate_rapid_strum(
@@ -134,7 +159,7 @@ def generate_rapid_strum(
     amplitude: float = 0.15,
     noise_std: float = 0.002,
     seed: int = 46,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float | int]]:
     """Generates fast cyclic strumming trajectory."""
     rng = np.random.RandomState(seed)
     n_samples = int(duration * fps)
@@ -149,7 +174,14 @@ def generate_rapid_strum(
 
     noise = rng.normal(0.0, noise_std, ground_truth.shape).astype(np.float32)
     noisy_input = ground_truth + noise
-    return timestamps, ground_truth, noisy_input
+    meta = {
+        "duration_s": duration,
+        "sample_count": n_samples,
+        "nominal_fps": fps,
+        "noise_std": noise_std,
+        "seed": seed,
+    }
+    return timestamps, ground_truth, noisy_input, meta
 
 
 def run_filter_on_trajectory(
@@ -172,50 +204,84 @@ def compute_metrics(
     timestamps: np.ndarray,
     ground_truth: np.ndarray,
     filtered_output: np.ndarray,
+    eval_axis: int = 0,
     is_step: bool = False,
     step_time: float = 0.5,
     step_mag: float = 0.30,
-) -> Dict[str, float]:
+    is_periodic: bool = False,
+    osc_freq: float = 1.5,
+    is_stationary: bool = False,
+) -> Dict[str, float | int]:
     """
-    Computes rigorous empirical metrics comparing filtered output against ground truth.
-    All evaluations focus on the X-coordinate of landmark 8 (Index fingertip).
+    Computes empirical metrics comparing filtered output against ground truth.
+    Evaluates Landmark 8 (Index fingertip) on specified axis (0=X, 1=Y).
     """
-    dt = float(timestamps[1] - timestamps[0]) if len(timestamps) > 1 else 0.01667
+    gt = ground_truth[:, 8, eval_axis]
+    filt = filtered_output[:, 8, eval_axis]
 
-    gt_x = ground_truth[:, 8, 0]
-    filt_x = filtered_output[:, 8, 0]
-
-    errors = filt_x - gt_x
+    errors = filt - gt
     mae = float(np.mean(np.abs(errors)))
     max_err = float(np.max(np.abs(errors)))
     rmse = float(np.sqrt(np.mean(errors ** 2)))
 
-    # Jitter: high-frequency variation (standard deviation of consecutive differences)
-    diffs = np.diff(filt_x)
-    jitter_rms = float(np.sqrt(np.mean(diffs ** 2)))
+    # Residual noise RMS: high-frequency error variation with true motion subtracted
+    # Delta e_i = e_i - e_{i-1}. Standard error std = RMS(Delta e) / sqrt(2)
+    diff_errors = np.diff(errors)
+    residual_noise_rms = float(np.sqrt(np.mean(diff_errors ** 2)) / np.sqrt(2.0))
+    residual_noise_px = float(residual_noise_rms * 1920.0)
 
-    # Cross-correlation phase lag estimation
-    s1 = filt_x - np.mean(filt_x)
-    s2 = gt_x - np.mean(gt_x)
-    std1 = np.std(s1)
-    std2 = np.std(s2)
-
-    if std1 > 1e-6 and std2 > 1e-6:
-        corr = np.correlate(s1, s2, mode="full")
-        lags = np.arange(-len(s1) + 1, len(s1))
-        best_lag_idx = int(np.argmax(corr))
-        lag_samples = lags[best_lag_idx]
-        lag_ms = float(max(0.0, lag_samples * dt * 1000.0))
+    # Stationary jitter: only defined for static hand tracking
+    if is_stationary:
+        stationary_jitter_rms = float(np.std(filt))
+        stationary_jitter_px = float(stationary_jitter_rms * 1920.0)
     else:
-        lag_ms = 0.0
+        stationary_jitter_rms = -1.0
+        stationary_jitter_px = -1.0
 
-    settling_time_ms = 0.0
+    # Phase lag estimation
+    detected_lag_frames = 0
+    phase_lag_ms = -1.0
+
+    if is_periodic and osc_freq > 0.0:
+        s1 = filt - np.mean(filt)
+        s2 = gt - np.mean(gt)
+        std1 = float(np.std(s1))
+        std2 = float(np.std(s2))
+
+        if std1 > 1e-5 and std2 > 1e-5:
+            # 1. Discrete cross-correlation (gives integer frames)
+            corr = np.correlate(s1, s2, mode="full")
+            lags = np.arange(-len(s1) + 1, len(s1))
+            best_lag_idx = int(np.argmax(corr))
+            detected_lag_frames = int(lags[best_lag_idx])
+
+            # 2. Continuous Fourier phase analysis at target frequency
+            sin_basis = np.sin(2.0 * np.pi * osc_freq * timestamps)
+            cos_basis = np.cos(2.0 * np.pi * osc_freq * timestamps)
+
+            # Discard initial cycle transient for steady-state phase estimation
+            warmup_mask = timestamps >= (1.0 / osc_freq)
+            w_filt = filt[warmup_mask]
+            w_gt = gt[warmup_mask]
+            w_sin = sin_basis[warmup_mask]
+            w_cos = cos_basis[warmup_mask]
+
+            phi_gt = float(np.arctan2(np.sum(w_gt * w_cos), np.sum(w_gt * w_sin)))
+            phi_filt = float(np.arctan2(np.sum(w_filt * w_cos), np.sum(w_filt * w_sin)))
+
+            d_phi = (phi_gt - phi_filt) % (2.0 * np.pi)
+            if d_phi > np.pi:
+                d_phi -= 2.0 * np.pi
+            phase_lag_ms = float(max(0.0, (d_phi / (2.0 * np.pi * osc_freq)) * 1000.0))
+
+    settling_time_ms = -1.0
+    overshoot_pct = 0.0
     if is_step:
         post_step_mask = timestamps >= step_time
         post_ts = timestamps[post_step_mask]
-        post_filt = filt_x[post_step_mask]
-        target = gt_x[-1]
-        threshold = 0.02 * step_mag
+        post_filt = filt[post_step_mask]
+        target = gt[-1]
+        threshold = 0.02 * step_mag  # 2% band of step magnitude
 
         settled = np.abs(post_filt - target) <= threshold
         settled_idx = None
@@ -229,25 +295,32 @@ def compute_metrics(
         else:
             settling_time_ms = float((post_ts[-1] - step_time) * 1000.0)
 
+        max_val = float(np.max(post_filt))
+        if max_val > target:
+            overshoot_pct = float(((max_val - target) / step_mag) * 100.0)
+
     return {
         "rmse": rmse,
         "mae": mae,
         "max_err": max_err,
-        "jitter_rms": jitter_rms,
-        "jitter_px_1080p": jitter_rms * 1920.0,
-        "lag_ms": lag_ms,
+        "stationary_jitter_px": stationary_jitter_px,
+        "residual_noise_px": residual_noise_px,
+        "phase_lag_ms": phase_lag_ms,
+        "detected_lag_frames": detected_lag_frames,
         "settling_time_ms": settling_time_ms,
+        "overshoot_pct": overshoot_pct,
     }
 
 
-def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.csv") -> List[Dict[str, str | float]]:
+def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.csv") -> List[Dict[str, str | float | int]]:
     """Runs all 4 filters through all 5 trajectories and writes results."""
+    # (name, generator_data, eval_axis, is_step, step_t, step_mag, is_periodic, osc_freq, is_stationary)
     trajectories = [
-        ("Stationary Noisy (3s)", generate_stationary_noisy(), False, 0.0, 0.0),
-        ("Constant Velocity (3s)", generate_constant_velocity(), False, 0.0, 0.0),
-        ("Sinusoidal 1.5Hz (4s)", generate_sinusoidal(), False, 0.0, 0.0),
-        ("Step Response (2s)", generate_step_discontinuity(), True, 0.5, 0.30),
-        ("Rapid Strum 4.0Hz (3s)", generate_rapid_strum(), False, 0.0, 0.0),
+        ("Stationary Noisy (3s)", generate_stationary_noisy(), 0, False, 0.0, 0.0, False, 0.0, True),
+        ("Constant Velocity (3s)", generate_constant_velocity(), 0, False, 0.0, 0.0, False, 0.0, False),
+        ("Sinusoidal 1.5Hz (4s)", generate_sinusoidal(), 0, False, 0.0, 0.0, True, 1.5, False),
+        ("Step Response (2s)", generate_step_discontinuity(), 0, True, 0.5, 0.30, False, 0.0, False),
+        ("Rapid Strum 4.0Hz (3s)", generate_rapid_strum(), 1, False, 0.0, 0.0, True, 4.0, False),
     ]
 
     filters: List[Tuple[str, BaseFilter]] = [
@@ -257,43 +330,64 @@ def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.cs
         ("OneEuroFilter (Casiez 2012)", OneEuroFilter(min_cutoff=1.0, beta=30.0, d_cutoff=1.0)),
     ]
 
-    results_table: List[Dict[str, str | float]] = []
+    results_table: List[Dict[str, str | float | int]] = []
 
-    print("\n" + "=" * 88)
+    print("\n" + "=" * 106)
     print("EMPIRICAL FILTER BENCHMARK SUITE (GESTURE AR INSTRUMENTS)")
-    print("=" * 88)
+    print("=" * 106)
 
-    for traj_name, (ts, gt, noisy), is_step, step_t, step_mag in trajectories:
-        print(f"\n--- Scenario: {traj_name} ---")
-        header = f"{'Filter Name':<30} | {'RMSE':<10} | {'MAE':<10} | {'Jitter (px)':<12} | {'Lag (ms)':<10} | {'Settling (ms)':<12}"
+    for traj_name, (ts, gt, noisy, meta), axis, is_step, step_t, step_mag, is_periodic, osc_f, is_stat in trajectories:
+        print(f"\n--- Scenario: {traj_name} (Duration: {meta['duration_s']}s, N={meta['sample_count']}, sigma={meta['noise_std']}) ---")
+        header = f"{'Filter Name':<28} | {'RMSE':<8} | {'MAE':<8} | {'Stat.Jitter':<11} | {'Resid.Noise':<11} | {'Lag (ms)':<9} | {'Settling (ms)'}"
         print(header)
         print("-" * len(header))
 
         for filt_name, filt_inst in filters:
             filtered = run_filter_on_trajectory(filt_inst, ts, noisy)
-            metrics = compute_metrics(ts, gt, filtered, is_step=is_step, step_time=step_t, step_mag=step_mag)
+            metrics = compute_metrics(
+                ts, gt, filtered,
+                eval_axis=axis,
+                is_step=is_step,
+                step_time=step_t,
+                step_mag=step_mag,
+                is_periodic=is_periodic,
+                osc_freq=osc_f,
+                is_stationary=is_stat,
+            )
 
+            stat_str = f"{metrics['stationary_jitter_px']:.2f} px" if is_stat else "N/A"
+            resid_str = f"{metrics['residual_noise_px']:.2f} px"
+            lag_str = f"{metrics['phase_lag_ms']:.1f}" if is_periodic else "N/A"
             settle_str = f"{metrics['settling_time_ms']:.1f}" if is_step else "N/A"
+
             row_str = (
-                f"{filt_name:<30} | "
-                f"{metrics['rmse']:.6f}   | "
-                f"{metrics['mae']:.6f}   | "
-                f"{metrics['jitter_px_1080p']:<12.3f} | "
-                f"{metrics['lag_ms']:<10.1f} | "
-                f"{settle_str:<12}"
+                f"{filt_name:<28} | "
+                f"{metrics['rmse']:.5f}  | "
+                f"{metrics['mae']:.5f}  | "
+                f"{stat_str:<11} | "
+                f"{resid_str:<11} | "
+                f"{lag_str:<9} | "
+                f"{settle_str}"
             )
             print(row_str)
 
-            record: Dict[str, str | float] = {
+            record: Dict[str, str | float | int] = {
                 "trajectory": traj_name,
                 "filter": filt_name,
+                "duration_s": meta["duration_s"],
+                "sample_count": meta["sample_count"],
+                "nominal_fps": meta["nominal_fps"],
+                "noise_std": meta["noise_std"],
+                "seed": meta["seed"],
                 "rmse": metrics["rmse"],
                 "mae": metrics["mae"],
                 "max_err": metrics["max_err"],
-                "jitter_rms": metrics["jitter_rms"],
-                "jitter_px_1080p": metrics["jitter_px_1080p"],
-                "lag_ms": metrics["lag_ms"],
-                "settling_time_ms": metrics["settling_time_ms"] if is_step else -1.0,
+                "stationary_jitter_px_1080p": metrics["stationary_jitter_px"],
+                "residual_noise_px_1080p": metrics["residual_noise_px"],
+                "phase_lag_ms": metrics["phase_lag_ms"],
+                "detected_lag_frames": metrics["detected_lag_frames"],
+                "settling_time_ms": metrics["settling_time_ms"],
+                "overshoot_pct": metrics["overshoot_pct"],
             }
             results_table.append(record)
 
@@ -302,13 +396,20 @@ def run_all_benchmarks(output_csv: str = "benchmarks/filter_benchmark_results.cs
     fieldnames = [
         "trajectory",
         "filter",
+        "duration_s",
+        "sample_count",
+        "nominal_fps",
+        "noise_std",
+        "seed",
         "rmse",
         "mae",
         "max_err",
-        "jitter_rms",
-        "jitter_px_1080p",
-        "lag_ms",
+        "stationary_jitter_px_1080p",
+        "residual_noise_px_1080p",
+        "phase_lag_ms",
+        "detected_lag_frames",
         "settling_time_ms",
+        "overshoot_pct",
     ]
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)

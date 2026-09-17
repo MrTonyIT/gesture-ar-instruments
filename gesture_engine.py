@@ -30,50 +30,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from geometry import segments_intersect
 from vision_tracker import HandData
 
 logger = logging.getLogger("GestureEngine")
-
-
-# =============================================================================
-# 2D Geometry Helpers
-# =============================================================================
-
-def ccw(a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float]) -> float:
-    """Calculates 2D cross-product orientation of three points."""
-    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-
-
-def segments_intersect(
-    p1: Tuple[float, float],
-    p2: Tuple[float, float],
-    q1: Tuple[float, float],
-    q2: Tuple[float, float],
-) -> bool:
-    """True 2D Line-Segment Intersection Test."""
-    d1 = ccw(p1, p2, q1)
-    d2 = ccw(p1, p2, q2)
-    d3 = ccw(q1, q2, p1)
-    d4 = ccw(q1, q2, p2)
-
-    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
-        return True
-
-    def on_segment(p: Tuple[float, float], q: Tuple[float, float], r: Tuple[float, float]) -> bool:
-        return (min(p[0], q[0]) <= r[0] <= max(p[0], q[0])) and \
-               (min(p[1], q[1]) <= r[1] <= max(p[1], q[1]))
-
-    if abs(d1) < 1e-5 and on_segment(p1, p2, q1):
-        return True
-    if abs(d2) < 1e-5 and on_segment(p1, p2, q2):
-        return True
-    if abs(d3) < 1e-5 and on_segment(q1, q2, p1):
-        return True
-    if abs(d4) < 1e-5 and on_segment(q1, q2, p2):
-        return True
-
-    return False
 
 
 class AppState(str, enum.Enum):

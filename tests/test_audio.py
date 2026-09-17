@@ -111,3 +111,47 @@ def test_master_soft_limiting():
     assert np.all(outdata <= 1.0)
     assert np.all(outdata >= -1.0)
     assert np.max(np.abs(outdata)) <= 1.0
+
+
+def test_audio_callback_rendering_and_telemetry(audio_engine):
+    """Verifies _audio_callback renders active voices and updates buffer telemetry."""
+    # Add a piano voice and guitar voice
+    audio_engine.play_piano(freq=440.0, velocity=0.8)
+    audio_engine.play_guitar(string_idx=2, chord_name="G", velocity=0.9)
+    assert audio_engine.get_active_voice_count() == 2
+
+    # Simulate PortAudio callback
+    frames = 256
+    outdata = np.zeros((frames, 2), dtype=np.float32)
+
+    class MockStatus:
+        output_underflow = False
+        output_overflow = False
+
+        def __bool__(self):
+            return False
+
+    audio_engine._audio_callback(outdata, frames, {}, MockStatus())
+
+    # Verify samples were generated and soft-limited
+    assert np.any(outdata != 0.0)
+    assert np.all(np.isfinite(outdata))
+    assert np.all(np.abs(outdata) <= 1.0)
+    assert audio_engine.underflow_count == 0
+    assert audio_engine.overflow_count == 0
+
+    # Simulate underflow flag
+    class UnderflowStatus:
+        output_underflow = True
+        output_overflow = False
+
+        def __bool__(self):
+            return True
+
+        def __str__(self):
+            return "output underflow"
+
+    audio_engine._audio_callback(outdata, frames, {}, UnderflowStatus())
+    assert audio_engine.underflow_count == 1
+    assert audio_engine.last_callback_status == "output underflow"
+

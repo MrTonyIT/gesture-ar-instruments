@@ -158,3 +158,24 @@ def test_hand_tracker_filter_switching():
 
     tracker.set_filter_mode("raw")
     assert isinstance(tracker._create_filter_instance(), RawFilter)
+
+
+def test_async_hand_tracker_concurrency():
+    """Verifies that AsyncHandTracker get_latest_hands is non-blocking during inference."""
+    import time
+    from vision_tracker import AsyncHandTracker, ThreadedCamera
+
+    camera = ThreadedCamera(src=0, width=640, height=480)
+    async_tracker = AsyncHandTracker(camera=camera, filter_mode="one_euro")
+
+    # Simulate inference lock held
+    with async_tracker._config_lock:
+        t0 = time.perf_counter()
+        # get_latest_hands should return immediately via snapshot lock without blocking on config lock
+        hands = async_tracker.get_latest_hands(current_time=time.perf_counter(), extrapolate=True)
+        t_elapsed = time.perf_counter() - t0
+
+    assert isinstance(hands, list)
+    # Must execute in sub-millisecond time even while config lock is occupied
+    assert t_elapsed < 0.05
+

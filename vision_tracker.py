@@ -7,12 +7,15 @@ Key Features:
 - ThreadedCamera: Dedicated background worker thread continuously capturing frames
   from cv2.VideoCapture at maximum FPS to eliminate I/O blocking.
 - HandTracker:
-  * Wraps Google MediaPipe Hands with high confidence thresholds (0.7/0.7).
+  * Wraps Google MediaPipe Hands with min_detection_confidence=0.55, min_tracking_confidence=0.50.
   * Raw RGB frame processing paired with mirrored coordinate transformation:
     X_screen = (1.0 - x) * Width.
   * Explicit Handedness label swapping ('Left' <-> 'Right') for intuitive mirrored AR.
-  * Exponential Moving Average (EMA, alpha=0.65) landmark smoothing for zero jitter.
+  * Pluggable BaseFilter smoothing (OneEuroFilter default, DeadbandFilter, EMAFilter, RawFilter).
   * Instantaneous fingertip velocity tracking (dY/dt) for piano key press velocity gating.
+- AsyncHandTracker:
+  * Decouples AI inference from UI render loop with independent snapshot lock to eliminate contention.
+  * Predictive kinematic dead-reckoning extrapolation for smooth 60+ FPS display.
 """
 
 from __future__ import annotations
@@ -356,8 +359,15 @@ class OneEuroFilter(BaseFilter):
     """
     1€ Filter: Adaptive Low-Pass Filter for Human Motion & AR Rig Jitter Elimination.
     Reference: Casiez, Roussel, Vogel (CHI 2012).
-    - Low speed / stationary: low cutoff (min_cutoff) -> rock-solid stability, zero trembling.
-    - High speed: cutoff jumps dynamically (up to max_cutoff or unbounded) -> minimal latency.
+
+    Parameters:
+    - min_cutoff: Minimum cutoff frequency in Hz (default: 1.0 Hz). Controls jitter attenuation at rest.
+    - beta: Speed coefficient (default: 30.0 for Normalized Device Coordinates [0, 1]).
+      Scales cutoff frequency proportionally to normalized tracking speed to eliminate phase lag during motion.
+      Note: beta=30.0 in NDC corresponds to dynamic scaling up to ~60 Hz during rapid strokes.
+    - d_cutoff: Cutoff frequency for derivative filtering in Hz (default: 1.0 Hz).
+    - max_cutoff: Optional upper bound on cutoff frequency in Hz (default: None, unbounded).
+    - dt: Clamped to [1e-4 s, 1.0 s] for numerical stability against timing spikes.
     """
 
     def __init__(
@@ -659,7 +669,8 @@ class AsyncHandTracker:
             filter_mode=filter_mode,
             model_complexity=model_complexity,
         )
-        self._lock = threading.Lock()
+        self._config_lock = threading.Lock()
+        self._snapshot_lock = threading.Lock()
         self._latest_hands: List[HandData] = []
         self._latest_timestamp: float = time.perf_counter()
         self.is_running: bool = False
@@ -674,20 +685,21 @@ class AsyncHandTracker:
 
     @property
     def filter_mode(self) -> str:
-        return self.tracker.filter_mode
+        with self._config_lock:
+            return self.tracker.filter_mode
 
     @filter_mode.setter
     def filter_mode(self, mode: str) -> None:
-        with self._lock:
-            self.tracker.set_filter_mode(mode)
+        self.set_filter_mode(mode)
 
     def set_filter_mode(self, mode: str) -> None:
-        with self._lock:
+        with self._config_lock:
             self.tracker.set_filter_mode(mode)
 
     @property
     def model_complexity(self) -> int:
-        return self.tracker.model_complexity
+        with self._config_lock:
+            return self.tracker.model_complexity
 
     @model_complexity.setter
     def model_complexity(self, complexity: int) -> None:
@@ -695,12 +707,13 @@ class AsyncHandTracker:
 
     def set_model_complexity(self, complexity: int) -> None:
         """Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full)."""
-        with self._lock:
+        with self._config_lock:
             self.tracker.set_model_complexity(complexity)
 
     def process(self, raw_bgr_frame: np.ndarray) -> List[HandData]:
         """Direct synchronous process fallback."""
-        return self.tracker.process(raw_bgr_frame)
+        with self._config_lock:
+            return self.tracker.process(raw_bgr_frame)
 
     def start(self) -> AsyncHandTracker:
         """Launches the dedicated background AI tracking worker thread."""
@@ -733,9 +746,13 @@ class AsyncHandTracker:
             last_processed_frame_id = frame_id
             t_start = time.perf_counter()
 
-            with self._lock:
+            # Heavy inference executed under config lock, completely decoupled from snapshot lock
+            with self._config_lock:
                 hands = self.tracker.process(frame)
-                t_after = time.perf_counter()
+            t_after = time.perf_counter()
+
+            # Publish result to snapshot lock in microseconds
+            with self._snapshot_lock:
                 self._latest_hands = hands
                 self._latest_timestamp = t_after
 
@@ -760,7 +777,7 @@ class AsyncHandTracker:
         Extrapolates coordinates forward by dt = (current_time - latest_update_time)
         so hand skeletons glide at 60-120 FPS between AI updates.
         """
-        with self._lock:
+        with self._snapshot_lock:
             hands_copy = [
                 HandData(
                     handedness=h.handedness,
