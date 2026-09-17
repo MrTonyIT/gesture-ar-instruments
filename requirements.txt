@@ -1,6 +1,6 @@
-# Runtime installation contract
-# For CI-verified direct dependency constraints, install with: -c constraints.txt
-opencv-contrib-python>=4.8.0
-mediapipe>=0.10.0
-numpy>=1.24.0
-sounddevice>=0.4.6
+# Runtime installation contract (pinned release dependencies)
+opencv-contrib-python==4.10.0.84
+mediapipe==0.10.14
+numpy==1.26.4
+sounddevice==0.5.1
+

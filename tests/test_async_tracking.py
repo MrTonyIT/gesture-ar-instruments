@@ -88,11 +88,103 @@ def test_extrapolation_age_uses_measurement_timestamp(async_tracker):
     np.testing.assert_allclose(ext_hand.landmarks_px[0, 0], 500.0 + expected_wrist_dx, rtol=1e-4)
     np.testing.assert_allclose(ext_hand.landmarks_px[0, 1], 400.0 + expected_wrist_dy, rtol=1e-4)
 
-    # Fingertip 8 has wrist_velocity + 0.5 * tip_velocity
-    expected_tip8_dx = expected_wrist_dx + 100.0 * expected_dt * 0.5  # 2.0 + 2.0 = 4.0 px
-    expected_tip8_dy = expected_wrist_dy + 50.0 * expected_dt * 0.5   # 0.8 + 1.0 = 1.8 px
+    # Fingertip 8 has wrist_velocity + 0.5 * (tip_velocity - wrist_velocity)
+    rel_vx = 100.0 - 50.0  # 50.0
+    rel_vy = 50.0 - 20.0   # 30.0
+    expected_tip8_dx = expected_wrist_dx + rel_vx * expected_dt * 0.5  # 2.0 + 1.0 = 3.0 px
+    expected_tip8_dy = expected_wrist_dy + rel_vy * expected_dt * 0.5  # 0.8 + 0.6 = 1.4 px
     np.testing.assert_allclose(ext_hand.landmarks_px[8, 0], 500.0 + expected_tip8_dx, rtol=1e-4)
     np.testing.assert_allclose(ext_hand.landmarks_px[8, 1], 400.0 + expected_tip8_dy, rtol=1e-4)
+
+
+def test_extrapolation_rigid_translation(async_tracker):
+    """
+    Verifies that under rigid hand translation (where all fingertip velocities equal
+    the wrist velocity), relative velocity is zero, so fingertips experience zero
+    excess displacement beyond the global wrist translation (no double-counting).
+    """
+    t_capture = 1.0
+    t_render = 1.040  # dt = 40ms
+    w, h = 1920, 1080
+
+    initial_px = np.full((21, 3), 300.0, dtype=np.float32)
+    initial_norm = np.zeros((21, 3), dtype=np.float32)
+    initial_norm[:, 0] = initial_px[:, 0] / w
+    initial_norm[:, 1] = initial_px[:, 1] / h
+
+    # Rigid translation: wrist and all fingertips moving at identical (80.0, -40.0) px/s
+    hand = HandData(
+        handedness="Right",
+        landmarks_norm=initial_norm.copy(),
+        landmarks_px=initial_px.copy(),
+        fingertip_velocities={4: (80.0, -40.0), 8: (80.0, -40.0), 12: (80.0, -40.0)},
+        wrist_velocity=(80.0, -40.0),
+        timestamp=t_capture,
+        inference_timestamp=t_capture + 0.015,
+    )
+
+    with async_tracker._snapshot_lock:
+        async_tracker._latest_hands = [hand]
+        async_tracker._latest_measurement_ts = t_capture
+        async_tracker._last_frame_w = w
+        async_tracker._last_frame_h = h
+
+    extrapolated = async_tracker.get_latest_hands(current_time=t_render, extrapolate=True)
+    ext_hand = extrapolated[0]
+
+    dt = 0.040
+    expected_dx = 80.0 * dt  # 3.2 px
+    expected_dy = -40.0 * dt  # -1.6 px
+
+    # Wrist (0) and fingertips (4, 8, 12) must all translate identically
+    for idx in [0, 4, 8, 12]:
+        np.testing.assert_allclose(ext_hand.landmarks_px[idx, 0], 300.0 + expected_dx, rtol=1e-4)
+        np.testing.assert_allclose(ext_hand.landmarks_px[idx, 1], 300.0 + expected_dy, rtol=1e-4)
+
+
+def test_extrapolation_articulation(async_tracker):
+    """
+    Verifies that when the wrist is stationary and a fingertip articulates independently,
+    only the articulating fingertip is projected forward by its relative velocity.
+    """
+    t_capture = 2.0
+    t_render = 2.030  # dt = 30ms
+    w, h = 1920, 1080
+
+    initial_px = np.full((21, 3), 400.0, dtype=np.float32)
+    initial_norm = np.zeros((21, 3), dtype=np.float32)
+    initial_norm[:, 0] = initial_px[:, 0] / w
+    initial_norm[:, 1] = initial_px[:, 1] / h
+
+    # Stationary wrist, index finger striking downward at (0.0, 120.0) px/s
+    hand = HandData(
+        handedness="Right",
+        landmarks_norm=initial_norm.copy(),
+        landmarks_px=initial_px.copy(),
+        fingertip_velocities={8: (0.0, 120.0)},
+        wrist_velocity=(0.0, 0.0),
+        timestamp=t_capture,
+        inference_timestamp=t_capture + 0.015,
+    )
+
+    with async_tracker._snapshot_lock:
+        async_tracker._latest_hands = [hand]
+        async_tracker._latest_measurement_ts = t_capture
+        async_tracker._last_frame_w = w
+        async_tracker._last_frame_h = h
+
+    extrapolated = async_tracker.get_latest_hands(current_time=t_render, extrapolate=True)
+    ext_hand = extrapolated[0]
+
+    dt = 0.030
+    # Wrist did not move
+    np.testing.assert_allclose(ext_hand.landmarks_px[0, 0], 400.0, rtol=1e-4)
+    np.testing.assert_allclose(ext_hand.landmarks_px[0, 1], 400.0, rtol=1e-4)
+
+    # Tip 8 moved by relative velocity * dt * 0.5 = 120.0 * 0.030 * 0.5 = 1.8 px
+    expected_tip8_y = 400.0 + 120.0 * dt * 0.5
+    np.testing.assert_allclose(ext_hand.landmarks_px[8, 0], 400.0, rtol=1e-4)
+    np.testing.assert_allclose(ext_hand.landmarks_px[8, 1], expected_tip8_y, rtol=1e-4)
 
 
 def test_extrapolation_age_clamping(async_tracker):
@@ -178,12 +270,39 @@ def test_first_camera_frame_timestamp():
     - synchronized _current_frame_id and _current_timestamp
     - synchronized public telemetry fields
     - read_sequenced() never returns a valid frame with an artificial timestamp == 0.0
+    Uses an injected MockVideoCapture to avoid device queries or platform-specific driver delays.
     """
     import time
     from vision_tracker import ThreadedCamera
 
-    # Non-existent device ID 999 triggers synthetic simulation mode deterministically
-    cam = ThreadedCamera(src=999, width=640, height=480)
+    class MockVideoCapture:
+        def __init__(self):
+            self._opened = True
+            self._frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def isOpened(self):
+            return self._opened
+
+        def set(self, prop, val):
+            return True
+
+        def get(self, prop):
+            return 0.0
+
+        def read(self):
+            return True, self._frame
+
+        def grab(self):
+            return True
+
+        def retrieve(self):
+            return True, self._frame
+
+        def release(self):
+            self._opened = False
+
+    mock_cap = MockVideoCapture()
+    cam = ThreadedCamera(src=0, width=640, height=480, cap=mock_cap)
     t_before = time.perf_counter()
     cam.start()
     try:
@@ -199,6 +318,119 @@ def test_first_camera_frame_timestamp():
         assert timestamp != 0.0
     finally:
         cam.stop()
+
+
+def test_async_hand_tracker_stop_bounded_timeout_when_stuck():
+    """
+    Verifies that if the AsyncHandTracker background worker thread is blocked/stuck,
+    calling stop(timeout=0.1) returns within a bounded window without hanging indefinitely,
+    and safely skips tracker.close() to prevent deadlock/race.
+    """
+    import threading
+    import time
+    from vision_tracker import AsyncHandTracker
+
+    worker_stuck_event = threading.Event()
+    unblock_worker_event = threading.Event()
+    close_called = False
+
+    class StuckFakeCamera:
+        def read_sequenced(self):
+            worker_stuck_event.set()
+            # Simulate worker blocked inside driver / external I/O
+            unblock_worker_event.wait(timeout=2.0)
+            return False, None, 0, 0.0
+
+    class DummyTracker:
+        def close(self):
+            nonlocal close_called
+            close_called = True
+
+    cam = StuckFakeCamera()
+    tracker = AsyncHandTracker(camera=cam, init_mediapipe=False)
+    tracker.tracker = DummyTracker()
+    tracker.start()
+
+    try:
+        # Wait until worker begins execution
+        assert worker_stuck_event.wait(timeout=2.0)
+
+        # Call stop with short timeout
+        t0 = time.perf_counter()
+        tracker.stop(timeout=0.1)
+        dur = time.perf_counter() - t0
+
+        # Must return in bounded time (around 0.1s, well under 1.0s)
+        assert dur < 1.0, f"stop() hung for {dur:.3f}s; must be bounded"
+        # Since worker was still alive, close() must have been skipped
+        assert not close_called, "tracker.close() must not be called while worker is still alive"
+    finally:
+        # Clean up worker thread
+        unblock_worker_event.set()
+        if tracker._thread is not None:
+            tracker._thread.join(timeout=1.0)
+
+
+def test_threaded_camera_stop_race_safety():
+    """
+    Verifies that if ThreadedCamera's worker thread is still running when stop(timeout=0.1)
+    is called, cap.release() is safely skipped to avoid concurrent driver access,
+    and can subsequently be cleaned up safely when the thread exits.
+    """
+    import threading
+    import time
+    from vision_tracker import ThreadedCamera
+
+    worker_blocked_event = threading.Event()
+    unblock_worker_event = threading.Event()
+    cap_released = False
+
+    class BlockingCap:
+        def __init__(self):
+            self._opened = True
+
+        def isOpened(self):
+            return self._opened
+
+        def set(self, prop, val):
+            return True
+
+        def read(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def grab(self):
+            worker_blocked_event.set()
+            unblock_worker_event.wait(timeout=2.0)
+            return True
+
+        def retrieve(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def release(self):
+            nonlocal cap_released
+            cap_released = True
+            self._opened = False
+
+    blocking_cap = BlockingCap()
+    cam = ThreadedCamera(src=0, width=640, height=480, cap=blocking_cap)
+    cam.start()
+
+    try:
+        assert worker_blocked_event.wait(timeout=2.0)
+        t0 = time.perf_counter()
+        cam.stop(timeout=0.1)
+        dur = time.perf_counter() - t0
+
+        assert dur < 1.0, f"ThreadedCamera.stop() hung for {dur:.3f}s"
+        # Worker was still alive at join timeout -> release skipped
+        assert not cap_released, "cap.release() must not be called while worker thread is alive"
+    finally:
+        unblock_worker_event.set()
+        if cam._thread is not None:
+            cam._thread.join(timeout=1.0)
+        # Now worker is stopped, calling stop() again should release cap safely
+        cam.stop(timeout=1.0)
+        assert cap_released, "cap.release() should be called once worker is terminated"
 
 
 

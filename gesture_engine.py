@@ -7,7 +7,7 @@ Key Updates & Ergonomic Design:
 1. Virtual Piano Docking:
    - When both hands form an 'L' shape for 1.2s, locks the Virtual Piano to the
      permanent bottom desk-surface dock (X: 0.05 to 0.95, Y: 0.72 to 0.96).
-   - Prevents "Gorilla Arm" fatigue by grounding the instrument where the user's
+   - Designed to reduce sustained arm elevation fatigue by grounding the instrument where the user's
      arms rest naturally against their desk.
 
 2. Virtual Guitar Placement:

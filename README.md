@@ -35,21 +35,21 @@ An extensive automated test suite covers tracking filters, geometry, synthesis, 
 - **Dual-Finger Sculpt & Snap**: Touch thumb and index fingertips of both hands together, pull apart to project dynamic laser rails, sculpt the soundbox circle, and bring within 145px to trigger magnetic plasma assembly.
 
 ### 🎹 2. Ergonomic Desk-Surface Piano
-- **Desk-Docked Architecture**: Grounded to the bottom 25% of the frame ($Y \in [0.72, 0.96]$) so wrists rest comfortably on the tabletop, preventing "gorilla arm" fatigue.
+- **Desk-Docked Architecture**: Grounded to the bottom 25% of the frame ($Y \in [0.72, 0.96]$) so wrists rest comfortably on the tabletop, designed to reduce sustained arm elevation fatigue.
 - **24 Keys (2 Octaves)**: 14 white natural keys and 10 black accidentals.
-- **Downward Velocity Gating ($v_y \ge 60\text{ px/s}, \bar{v}_y \ge 0.08$)**: Differentiates deliberate downward key strikes from resting or lateral finger motion, eliminating ghost notes.
-- **Geometric Collision Precedence**: Evaluates black keys before white keys with boundary padding to ensure sharp accidentals are never missed.
+- **Downward Velocity Gating ($v_y \ge 60\text{ px/s}, \bar{v}_y \ge 0.08$)**: Differentiates deliberate downward key strikes from resting or lateral finger motion, reducing unintended retriggers / ghost notes.
+- **Geometric Collision Precedence**: Black-key precedence prioritizes accidentals in overlapping regions with boundary padding before evaluating underlying white keys.
 - **Hover Suppression**: Tracks held fingers per key to prevent unintended re-strikes while fingers hover or rest on the surface.
 
 ### 📊 3. Developer Diagnostics HUD & Quality Profiles
 - **Real-Time Telemetry HUD (`F3`, `Tab`, or `` ` ``)**: Displays high-resolution timing bars and millisecond metrics for:
-  - `Cam I/O`: Camera capture thread latency.
+  - `Snapshot Access`: Camera frame snapshot access duration.
   - `Track Snapshot`: Latency of hand tracking queue ingestion.
   - `AI Inference`: Raw MediaPipe neural network latency and stale frame skip counter.
   - `Gesture Machine`: State evaluation and touch collision processing time.
   - `Render Loop`: Vectorized alpha blending and HUD drawing time.
   - `Audio Bus`: Active concurrent voice count and peak amplitude with soft-limiter indicator.
-- **Visual Quality Profiles (`V` key)**: Cycle between `HIGH` (Model Complexity 1, 60 FPS target), `BALANCED` (Complexity 0), and `LOW` for maximum frame rate on low-power hardware.
+- **Visual Quality Profiles (`V` key)**: Cycle between `HIGH` (Model Complexity 1, 60 FPS target rate), `BALANCED` (Complexity 0), and `LOW` for maximum frame rate on low-power hardware.
 
 ### 🎛️ 4. Pluggable Tracking Filter Hierarchy
 Choose between four filtering strategies in `vision_tracker.py`:
@@ -149,8 +149,11 @@ pip install -r requirements-dev.txt
 # (Recommended for CI / Research Reproduction) Install with CI-verified direct dependency constraints:
 # pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 
-# Or install as an editable package with CLI entry point:
+# Standard package install:
 pip install .
+
+# Or install in editable development mode with dev tools:
+pip install -e ".[dev]"
 ```
 
 > [!NOTE]
@@ -164,8 +167,9 @@ gesture-ar
 # Or run via Python module:
 python main.py
 
-# Specify camera device and window size
-python main.py --camera-id 0 --width 1920 --height 1080
+# Specify camera device, backend, and window size:
+python main.py --camera-id 0 --camera-backend auto --width 1920 --height 1080
+# Note: On Windows, pass --camera-backend dshow to enable the native hardware settings dialog [P]
 ```
 
 ### 3. Running the Test Suite & Benchmarks
@@ -198,6 +202,7 @@ python -m ruff check .
 | **Diagnostics** | `F3`, `Tab`, or `` ` `` | Telemetry HUD | Toggles developer diagnostics panel |
 | **Quality Mode** | `V` key | Application | Cycles `HIGH` $\to$ `BALANCED` $\to$ `LOW` |
 | **Tracking Filter** | `K` key | Hand Tracking | Cycles `1-Euro` $\to$ `Deadband` $\to$ `EMA` $\to$ `Raw` |
+| **Camera Settings** | `P` key | Camera | Opens native camera properties dialog (Windows DirectShow only) |
 | **Reset State** | Hold `[RESET]` button (0.7s) | Application | Resets state machine to `IDLE` |
 | **Exit** | Hold `[EXIT]` button (3.0s) or `ESC` | Application | Gracefully releases all hardware resources |
 

@@ -21,11 +21,12 @@ Key Features:
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -49,20 +50,23 @@ class HandData:
         y in [0, 1]: Vertical image coordinate.
         z in R: Relative depth with the wrist as origin (z ~= 0.0 at wrist, negative is
                 closer to camera, scaled roughly to image width). Note: z does NOT lie in [0, 1].
+        Note: Forward kinematic dead-reckoning extrapolation may temporarily project coordinates
+        slightly outside [0, 1] when moving toward or past visible frame boundaries.
     - landmarks_px: (21, 3) float32 array in screen pixel coordinates:
         x in [0, width], y in [0, height], z in pixels (scaled by frame width).
     - Invariant: landmarks_px[:, 0] == landmarks_norm[:, 0] * width,
                  landmarks_px[:, 1] == landmarks_norm[:, 1] * height,
                  landmarks_px[:, 2] == landmarks_norm[:, 2] * width.
-    - timestamp: float measurement timestamp (exact time the source video frame was captured).
-    - inference_timestamp: float publication timestamp (exact time AI inference completed).
+    - timestamp: float host acquisition timestamp (monotonic time recorded immediately after
+                 frame retrieval; measurement proxy without unknown driver/sensor buffering delay).
+    - inference_timestamp: float publication timestamp (exact monotonic time AI inference completed).
     """
     handedness: str  # 'Left' or 'Right' (aligned with mirrored display)
     landmarks_norm: np.ndarray  # (21, 3) float32
     landmarks_px: np.ndarray    # (21, 3) float32
     fingertip_velocities: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     wrist_velocity: Tuple[float, float] = (0.0, 0.0)
-    timestamp: float = 0.0  # Frame capture / measurement timestamp
+    timestamp: float = 0.0  # Monotonic host acquisition timestamp recorded immediately after frame retrieval
     inference_timestamp: float = 0.0  # Inference completion / publication timestamp
     # Landmark indices for fingertips: 4 (thumb), 8 (index), 12 (middle), 16 (ring), 20 (pinky)
 
@@ -70,21 +74,31 @@ class HandData:
 class ThreadedCamera:
     """
     Dedicated background thread for OpenCV VideoCapture.
-    Decouples frame acquisition from inference and rendering to maintain a stable 60 FPS.
+    Decouples frame acquisition from inference and rendering targeting a 60 FPS update rate.
     """
 
-    def __init__(self, src: int = 0, width: int = 1920, height: int = 1080) -> None:
+    def __init__(
+        self,
+        src: int = 0,
+        width: int = 1920,
+        height: int = 1080,
+        backend: str = "auto",
+        cap: Optional[Any] = None,
+    ) -> None:
         self.src = src
         self.target_width = width
         self.target_height = height
+        self.backend = backend.lower()
+        self.active_backend: str = self.backend
 
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.cap: Optional[Any] = cap
         self.frame: Optional[np.ndarray] = None
         self.ret: bool = False
         self.is_running: bool = False
         self.is_simulation: bool = False
 
         self.camera_fps: float = 0.0
+        self.hw_capture_latency_ms: float = 0.0
         self._frame_count: int = 0
         self._last_fps_calc: float = time.perf_counter()
 
@@ -97,19 +111,35 @@ class ThreadedCamera:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._sim_phase: float = 0.0
+        self._released: bool = False
 
     def start(self) -> ThreadedCamera:
         """Initializes camera hardware and launches the worker thread."""
-        logger.info("Initializing VideoCapture on source %s...", self.src)
-        # Try default native backend first (optimal on Windows MSMF)
-        self.cap = cv2.VideoCapture(self.src)
+        logger.info("Initializing VideoCapture on source %s (backend: %s)...", self.src, self.backend)
+        if self.cap is None:
+            if self.backend == "dshow":
+                if sys.platform != "win32":
+                    raise RuntimeError("DirectShow camera backend ('dshow') is only supported on Windows.")
+                backend_flag = getattr(cv2, "CAP_DSHOW", 0)
+                self.cap = cv2.VideoCapture(self.src, backend_flag)
+                self.active_backend = "dshow"
+            elif self.backend == "msmf":
+                if sys.platform != "win32":
+                    raise RuntimeError("Media Foundation camera backend ('msmf') is only supported on Windows.")
+                backend_flag = getattr(cv2, "CAP_MSMF", 0)
+                self.cap = cv2.VideoCapture(self.src, backend_flag)
+                self.active_backend = "msmf"
+            else:
+                # auto: default native backend first
+                self.cap = cv2.VideoCapture(self.src)
+                self.active_backend = "auto"
+                if not self.cap.isOpened() and hasattr(cv2, "CAP_DSHOW") and sys.platform == "win32":
+                    self.cap = cv2.VideoCapture(self.src, cv2.CAP_DSHOW)
+                    if self.cap.isOpened():
+                        self.active_backend = "dshow"
 
-        if not self.cap.isOpened() and hasattr(cv2, 'CAP_DSHOW'):
-            # Fallback to DirectShow if native backend fails
-            self.cap = cv2.VideoCapture(self.src, cv2.CAP_DSHOW)
-
-        if self.cap.isOpened():
-            # Configure high-definition resolution and 60 FPS hardware capture
+        if self.cap is not None and self.cap.isOpened():
+            # Request target resolution, frame rate, and minimal driver buffer
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
             self.cap.set(cv2.CAP_PROP_FPS, 60)
@@ -121,15 +151,16 @@ class ThreadedCamera:
                 actual_h, actual_w = self.frame.shape[:2]
                 self.target_width = actual_w
                 self.target_height = actual_h
-                logger.info("Camera successfully opened at crisp %dx%d resolution", actual_w, actual_h)
+                logger.info("Camera successfully opened at crisp %dx%d resolution (backend: %s)", actual_w, actual_h, self.active_backend)
             else:
-                logger.info("Camera opened: %dx%d", self.target_width, self.target_height)
+                logger.info("Camera opened: %dx%d (backend: %s)", self.target_width, self.target_height, self.active_backend)
             self.is_simulation = False
         else:
             logger.warning("No camera available on source %s. Falling back to synthetic simulation mode.", self.src)
             self.is_simulation = True
             self.ret = True
             self.frame = self._generate_simulation_frame()
+
         now = time.perf_counter()
         with self._lock:
             if self.ret and self.frame is not None:
@@ -153,9 +184,12 @@ class ThreadedCamera:
         """Background thread target continuously grabbing fresh frames with zero hardware backlog."""
         while self.is_running:
             if not self.is_simulation and self.cap is not None and self.cap.isOpened():
-                # Flush any queued driver frames and retrieve strictly the latest frame
-                if self.cap.grab():
+                t0 = time.perf_counter()
+                grabbed = self.cap.grab()
+                if grabbed:
                     ret, frame = self.cap.retrieve()
+                    t1 = time.perf_counter()
+                    self.hw_capture_latency_ms = 0.90 * self.hw_capture_latency_ms + 0.10 * ((t1 - t0) * 1000.0)
                     if ret and frame is not None:
                         now = time.perf_counter()
                         self._frame_count += 1
@@ -177,7 +211,7 @@ class ThreadedCamera:
                 else:
                     time.sleep(0.001)
             else:
-                # Simulation mode frame generation at ~60 FPS
+                # Simulation mode frame generation targeting ~60 FPS
                 time.sleep(0.016)
                 sim_frame = self._generate_simulation_frame()
                 now = time.perf_counter()
@@ -230,14 +264,39 @@ class ThreadedCamera:
         )
         return canvas
 
-    def open_settings_dialog(self) -> None:
-        """Opens native Windows Camera Properties dialog to configure 50/60Hz, exposure, gain, etc."""
-        if self.cap is not None and self.cap.isOpened():
-            try:
-                self.cap.set(cv2.CAP_PROP_SETTINGS, 1.0)
-                logger.info("Triggered Windows Camera Properties dialog.")
-            except Exception as e:
-                logger.warning("Could not open hardware camera settings dialog: %s", e)
+    def open_settings_dialog(self) -> bool:
+        """
+        Attempts to open native Windows Camera Properties dialog to configure 50/60Hz, exposure, gain, etc.
+        Requires the DirectShow backend on Windows.
+        Returns True if dialog was triggered successfully, False otherwise.
+        """
+        if self.is_simulation or self.cap is None or not self.cap.isOpened():
+            logger.warning("Camera settings dialog [P] is unavailable: Camera is inactive or in simulation mode.")
+            return False
+
+        if sys.platform != "win32":
+            logger.warning("Camera properties dialog [P] is only supported on Windows.")
+            return False
+
+        if self.active_backend.lower() != "dshow":
+            logger.warning(
+                "Camera properties dialog [P] requires the DirectShow backend. "
+                "Current backend is '%s'. Launch with '--camera-backend dshow' on Windows to enable.",
+                self.active_backend,
+            )
+            return False
+
+        try:
+            res = self.cap.set(cv2.CAP_PROP_SETTINGS, 1.0)
+            if res:
+                logger.info("Triggered Windows DirectShow camera properties dialog.")
+                return True
+            else:
+                logger.warning("OpenCV CAP_PROP_SETTINGS call returned False for device %s.", self.src)
+                return False
+        except Exception as e:
+            logger.warning("Could not open hardware camera settings dialog: %s", e)
+            return False
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         """Safely returns the most recently captured frame without redundant copying."""
@@ -253,19 +312,29 @@ class ThreadedCamera:
                 return self.ret, self.frame, self._current_frame_id, self._current_timestamp
             return False, None, 0, 0.0
 
-    def stop(self) -> None:
-        """Gracefully halts the background thread and releases hardware resources."""
+    def stop(self, timeout: float = 1.0) -> None:
+        """Gracefully halts the background thread and releases hardware resources safely."""
         self.is_running = False
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=timeout)
+
+        if self._thread is not None and self._thread.is_alive():
+            logger.warning(
+                "ThreadedCamera worker did not terminate within timeout (%ss); "
+                "skipping VideoCapture.release() to prevent concurrent access race.",
+                timeout,
+            )
+            return
 
         if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception as e:
-                logger.debug("Error releasing VideoCapture: %s", e)
-            finally:
-                self.cap = None
+            if not self._released:
+                self._released = True
+                try:
+                    self.cap.release()
+                except Exception as e:
+                    logger.debug("Error releasing VideoCapture: %s", e)
+                finally:
+                    self.cap = None
         logger.info("ThreadedCamera stopped.")
 
 
@@ -499,11 +568,15 @@ class HandTracker:
 
         if not self.init_mediapipe:
             logger.info("MediaPipe graph initialization skipped (init_mediapipe=False).")
-        elif mp is not None and hasattr(mp, 'solutions') and hasattr(mp.solutions, 'hands'):
+        elif mp is not None and hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
             self.mp_hands = mp.solutions.hands
             self._init_mp_hands()
         else:
-            logger.warning("MediaPipe library not available. Hand tracking will be simulated/disabled.")
+            raise RuntimeError(
+                "MediaPipe legacy solutions API (mp.solutions.hands) is unavailable. "
+                "This application requires mediapipe==0.10.14 with legacy graph support. "
+                "Please install the verified release dependencies via: pip install -r requirements.txt -c constraints.txt"
+            )
 
     def _init_mp_hands(self) -> None:
         """Initializes or reconfigures MediaPipe Hands instance."""
@@ -722,6 +795,7 @@ class AsyncHandTracker:
         self._last_frame_h: int = getattr(camera, "height", 1080)
         self.is_running: bool = False
         self._thread: Optional[threading.Thread] = None
+        self._closed: bool = False
 
         # Telemetry
         self.ai_fps: float = 0.0
@@ -867,11 +941,13 @@ class AsyncHandTracker:
                 hand.landmarks_px[:, 0] += vw_x * dt
                 hand.landmarks_px[:, 1] += vw_y * dt
 
-            # Further extrapolate fingertips using relative fingertip velocity
+            # Further extrapolate fingertips using relative fingertip velocity (tip velocity minus wrist velocity)
             for tip_idx, (vx, vy) in hand.fingertip_velocities.items():
-                if abs(vx) > 5.0 or abs(vy) > 5.0:
-                    hand.landmarks_px[tip_idx, 0] += vx * dt * 0.5
-                    hand.landmarks_px[tip_idx, 1] += vy * dt * 0.5
+                rel_vx = vx - vw_x
+                rel_vy = vy - vw_y
+                if abs(rel_vx) > 5.0 or abs(rel_vy) > 5.0:
+                    hand.landmarks_px[tip_idx, 0] += rel_vx * dt * 0.5
+                    hand.landmarks_px[tip_idx, 1] += rel_vy * dt * 0.5
 
             # Synchronize canonical normalized coordinates to maintain exact consistency invariant
             hand.landmarks_norm[:, 0] = hand.landmarks_px[:, 0] * inv_w
@@ -880,13 +956,24 @@ class AsyncHandTracker:
 
         return hands_copy
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> None:
         """Stops the async worker thread and releases resources safely."""
         self.is_running = False
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
-        with self._config_lock:
-            self.tracker.close()
+            self._thread.join(timeout=timeout)
+
+        if self._thread is not None and self._thread.is_alive():
+            logger.warning(
+                "AsyncHandTracker worker did not terminate within timeout (%ss); "
+                "skipping tracker.close() to prevent concurrent access race.",
+                timeout,
+            )
+            return
+
+        if not self._closed:
+            self._closed = True
+            with self._config_lock:
+                self.tracker.close()
         logger.info("AsyncHandTracker stopped.")
 
     def close(self) -> None:

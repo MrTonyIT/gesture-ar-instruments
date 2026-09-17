@@ -132,6 +132,7 @@ class GestureARApp:
         start_threads: bool = True,
         quality_profile: str = "HIGH",
         init_mediapipe: bool = True,
+        camera_backend: str = "auto",
     ) -> None:
         self.width = width
         self.height = height
@@ -148,8 +149,8 @@ class GestureARApp:
         if camera is not None:
             self.camera = camera
         else:
-            logger.info("Initializing Threaded Camera on source %s (Target: %dx%d)...", camera_id, self.width, self.height)
-            self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height)
+            logger.info("Initializing Threaded Camera on source %s (Target: %dx%d, backend: %s)...", camera_id, self.width, self.height, camera_backend)
+            self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height, backend=camera_backend)
             if start_threads:
                 self.camera.start()
 
@@ -320,7 +321,14 @@ class GestureARApp:
                 rend_time_ms = (t_rend_end - t_rend_start) * 1000.0
                 self.telemetry["rend_ms"] = 0.90 * self.telemetry["rend_ms"] + 0.10 * rend_time_ms
 
-                # 8. Frame rate calculation & loop telemetry
+                # 8. Render frame to window
+                cv2.imshow(window_name, display_frame)
+
+                # 9. Key Handling & OS Event Polling
+                raw_key = cv2.waitKeyEx(1)
+                key = raw_key & 0xFF if raw_key != -1 else -1
+
+                # 10. Frame rate calculation & loop telemetry (measures complete pipeline including presentation)
                 now = time.perf_counter()
                 dt = now - self.prev_frame_time
                 self.prev_frame_time = now
@@ -329,13 +337,6 @@ class GestureARApp:
                     self.fps = 0.9 * self.fps + 0.1 * current_fps
                 total_frame_ms = (now - loop_start) * 1000.0
                 self.telemetry["total_ms"] = 0.90 * self.telemetry["total_ms"] + 0.10 * total_frame_ms
-
-                # Render frame to window
-                cv2.imshow(window_name, display_frame)
-
-                # 9. Key Handling
-                raw_key = cv2.waitKeyEx(1)
-                key = raw_key & 0xFF if raw_key != -1 else -1
 
                 if key in (ord("q"), ord("Q"), 27):
                     logger.info("Exit key pressed.")
@@ -382,7 +383,12 @@ class GestureARApp:
                 elif key in (ord("p"), ord("P")):
                     # Open native hardware camera properties dialog
                     logger.info("Requesting hardware camera properties dialog [P]...")
-                    self.camera.open_settings_dialog()
+                    opened = self.camera.open_settings_dialog()
+                    if not opened:
+                        logger.info(
+                            "Camera settings dialog [P] unavailable. "
+                            "On Windows, launch with '--camera-backend dshow' to enable hardware camera controls."
+                        )
                 elif self.guitar is not None and key in GUITAR_KEY_CHORD_MAP:
                     ch = GUITAR_KEY_CHORD_MAP[key]
                     self.guitar.set_chord(ch)
@@ -874,7 +880,7 @@ class GestureARApp:
 
         lines = [
             f"Render Loop FPS: {self.fps:.1f} FPS  (Total: {self.telemetry['total_ms']:.1f} ms)",
-            f"Camera HW FPS:   {self.camera.camera_fps:.1f} FPS  (I/O: {self.telemetry['cam_ms']:.1f} ms)",
+            f"Camera HW FPS:   {self.camera.camera_fps:.1f} FPS  (Snapshot Access: {self.telemetry['cam_ms']:.1f} ms)",
             f"AI Inference:    {ai_fps:.1f} FPS  (Lat: {ai_lat:.1f} ms, Stale Skip: {stale_frames})",
             f"Active Pipeline: Gesture {self.telemetry['gest_ms']:.1f}ms | Render {self.telemetry['rend_ms']:.1f}ms",
             f"Audio Bus:       {voices} active voices | Peak: {peak:.1f}% (Soft Limiter: Active)",
@@ -1388,7 +1394,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-id", type=int, default=0, help="Webcam device index (default: 0)")
     parser.add_argument("--width", type=int, default=1920, help="Display frame width (default: 1920)")
     parser.add_argument("--height", type=int, default=1080, help="Display frame height (default: 1080)")
-    return parser.parse_args()
+    parser.add_argument(
+        "--camera-backend",
+        choices=["auto", "dshow", "msmf"],
+        default="auto",
+        help="Camera capture backend (auto, dshow, msmf). Note: dshow and msmf are Windows-only.",
+    )
+    args = parser.parse_args()
+    if sys.platform != "win32" and args.camera_backend in ("dshow", "msmf"):
+        parser.error(f"--camera-backend '{args.camera_backend}' is only supported on Windows platforms.")
+    return args
 
 
 def main() -> None:
@@ -1397,6 +1412,7 @@ def main() -> None:
         camera_id=args.camera_id,
         width=args.width,
         height=args.height,
+        camera_backend=args.camera_backend,
     )
     app.run()
 

@@ -9,7 +9,7 @@
 
 ## 1. Executive Abstract
 
-Spatial augmented reality (AR) musical instruments face a classical human-computer interaction (HCI) trade-off: **high-frequency tremor attenuation versus dynamic phase lag**. When tracking bare hands through monocular RGB webcams at 60 FPS, landmark jitter degrades virtual string plucking and piano key strikes. Traditional low-pass filtering eliminates tremor but introduces phase lag, causing users to perceive latency and miss rhythmic downbeats.
+Spatial augmented reality (AR) musical instruments face a classical human-computer interaction (HCI) trade-off: **high-frequency tremor attenuation versus dynamic phase lag**. When tracking bare hands through monocular RGB webcams targeting 60 FPS, landmark jitter degrades virtual string plucking and piano key strikes. Traditional low-pass filtering eliminates tremor but introduces phase lag, causing users to perceive latency and miss rhythmic downbeats.
 
 This research paper documents the engineering design of `gesture-ar-instruments`. We present:
 1. **A formal evaluation of four kinematic tracking filter architectures** (Raw Pass-Through, Exponential Moving Average, Adaptive Deadband, and 1€ Filter).
@@ -151,7 +151,7 @@ To prevent priority inversions on the PortAudio callback thread:
 
 ## 5. Desk-Surface Piano Kinematics
 
-In `instruments.py`, the virtual piano is grounded to the lower desk area ($Y \in [0.72, 0.96]$) so the user's wrists rest on the physical desk, eliminating the "gorilla arm" ergonomic syndrome.
+In `instruments.py`, the virtual piano is grounded to the lower desk area ($Y \in [0.72, 0.96]$) so the user's wrists rest on the physical desk, designed to reduce sustained arm elevation fatigue.
 
 ### 5.1 Downward Velocity Gating
 Resting fingers inside a key rect must not continuously re-trigger notes:

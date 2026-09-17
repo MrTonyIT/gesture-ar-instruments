@@ -38,6 +38,14 @@ jobs:
           gesture-ar --help
           python -c "import main; print('Installed location:', main.__file__)"
 
+      - name: Isolated Fresh-Env Install Smoke Test
+        run: |
+          python -m venv fresh-env
+          ./fresh-env/bin/python -m pip install --upgrade pip
+          ./fresh-env/bin/pip install .
+          ./fresh-env/bin/gesture-ar --help
+          ./fresh-env/bin/python -c "import main, vision_tracker, gesture_engine, instruments, audio_engine; print('Fresh environment import success!')"
+
       - name: Syntax and Bytecode Compilation
         run: |
           python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
@@ -55,4 +63,44 @@ jobs:
         run: |
           python benchmark_filters.py
           git diff --exit-code -- benchmarks/filter_benchmark_results.csv
+
+  windows-release-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+
+      - name: Install Package and Test Entry Point
+        run: |
+          python -m pip install --no-deps .
+          gesture-ar --help
+          python -c "import main; print('Installed location:', main.__file__)"
+
+      - name: Syntax and Bytecode Compilation
+        run: |
+          python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
+          python -m compileall .
+
+      - name: Code Quality & Linting
+        run: |
+          python -m ruff check .
+
+      - name: Headless Test Suite
+        run: |
+          python -m pytest -q
+
+      - name: Tracking Filter Benchmark Verification
+        run: |
+          python benchmark_filters.py
+          git diff --exit-code -- benchmarks/filter_benchmark_results.csv
+
 

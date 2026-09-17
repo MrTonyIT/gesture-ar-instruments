@@ -62,6 +62,30 @@ def test_cli_entry_point_help():
     assert "--camera-id" in res.stdout
     assert "--width" in res.stdout
     assert "--height" in res.stdout
+    assert "--camera-backend" in res.stdout
+
+
+def test_dependency_contract_consistency():
+    """
+    Verifies that pyproject.toml, requirements.txt, and constraints.txt all enforce
+    identical pinned runtime dependency versions.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    req_text = (repo_root / "requirements.txt").read_text(encoding="utf-8")
+    constraints_text = (repo_root / "constraints.txt").read_text(encoding="utf-8")
+
+    expected_pins = [
+        "opencv-contrib-python==4.10.0.84",
+        "mediapipe==0.10.14",
+        "numpy==1.26.4",
+        "sounddevice==0.5.1",
+    ]
+
+    for pin in expected_pins:
+        assert pin in pyproject_text, f"{pin} missing from pyproject.toml dependencies"
+        assert pin in req_text, f"{pin} missing from requirements.txt"
+        assert pin in constraints_text, f"{pin} missing from constraints.txt"
 
 
 def test_installed_package_metadata():
