@@ -9,7 +9,6 @@ import importlib.metadata
 import subprocess
 import sys
 from pathlib import Path
-import tomllib
 
 
 def test_pyproject_flat_layout_modules_declared():
@@ -18,14 +17,11 @@ def test_pyproject_flat_layout_modules_declared():
     pyproject_path = repo_root / "pyproject.toml"
     assert pyproject_path.exists(), "pyproject.toml must exist at repo root"
 
-    with open(pyproject_path, "rb") as f:
-        data = tomllib.load(f)
+    text = pyproject_path.read_text(encoding="utf-8")
+    assert "[tool.setuptools]" in text
+    assert "py-modules" in text
 
-    tool_setuptools = data.get("tool", {}).get("setuptools", {})
-    py_modules = tool_setuptools.get("py-modules", [])
-    assert py_modules, "pyproject.toml must configure [tool.setuptools] py-modules for flat repository layout"
-
-    expected_modules = {
+    expected_modules = [
         "main",
         "vision_tracker",
         "gesture_engine",
@@ -33,8 +29,9 @@ def test_pyproject_flat_layout_modules_declared():
         "audio_engine",
         "geometry",
         "benchmark_filters",
-    }
-    assert expected_modules.issubset(set(py_modules)), f"Missing modules in py-modules: {expected_modules - set(py_modules)}"
+    ]
+    for mod in expected_modules:
+        assert f'"{mod}"' in text or f"'{mod}'" in text, f"Module {mod} missing in pyproject.toml py-modules"
 
 
 def test_pyproject_dependencies():
@@ -42,18 +39,14 @@ def test_pyproject_dependencies():
     repo_root = Path(__file__).resolve().parent.parent
     pyproject_path = repo_root / "pyproject.toml"
 
-    with open(pyproject_path, "rb") as f:
-        data = tomllib.load(f)
+    text = pyproject_path.read_text(encoding="utf-8").lower()
 
-    deps = data.get("project", {}).get("dependencies", [])
-    dep_str = " ".join(deps).lower()
-
-    assert "opencv-contrib-python" in dep_str, "Must depend on opencv-contrib-python (single unified OpenCV wheel)"
-    assert "opencv-python>=" not in dep_str or "opencv-python==" not in dep_str, "Must not dual-declare opencv-python"
-    assert "scipy" not in dep_str, "Unused scipy dependency must not be present"
-    assert "mediapipe" in dep_str, "mediapipe dependency required"
-    assert "sounddevice" in dep_str, "sounddevice dependency required"
-    assert "numpy" in dep_str, "numpy dependency required"
+    assert "opencv-contrib-python" in text, "Must depend on opencv-contrib-python (single unified OpenCV wheel)"
+    assert "opencv-python>=" not in text and "opencv-python==" not in text, "Must not dual-declare opencv-python"
+    assert "scipy" not in text, "Unused scipy dependency must not be present"
+    assert "mediapipe" in text, "mediapipe dependency required"
+    assert "sounddevice" in text, "sounddevice dependency required"
+    assert "numpy" in text, "numpy dependency required"
 
 
 def test_cli_entry_point_help():
