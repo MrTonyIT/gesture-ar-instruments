@@ -1024,6 +1024,19 @@ class Guitar:
                 cv2.polylines(frame, [vibe_pts], isClosed=False, color=(0, 240, 255), thickness=3, lineType=cv2.LINE_AA)
                 cv2.polylines(frame, [vibe_pts], isClosed=False, color=(255, 255, 255), thickness=1, lineType=cv2.LINE_AA)
 
+                # High-energy glowing neon particle sparks radiating from vibrating string
+                if string.vibration_amplitude > 1.0:
+                    num_sparks = int(min(14, string.vibration_amplitude * 0.85))
+                    rng = np.random.RandomState(int(string.vibration_phase * 15) + string.index * 17)
+                    spark_u = rng.uniform(0.12, 0.88, num_sparks)
+                    spark_dev = rng.uniform(-string.vibration_amplitude * 1.6, string.vibration_amplitude * 1.6, (num_sparks, 2))
+                    for su, off in zip(spark_u, spark_dev):
+                        sp_base = p1 + su * seg_vec
+                        sp_pos = (int(round(sp_base[0] + off[0])), int(round(sp_base[1] + off[1])))
+                        if 0 <= sp_pos[0] < frame.shape[1] and 0 <= sp_pos[1] < frame.shape[0]:
+                            cv2.circle(frame, sp_pos, 2, (255, 255, 255), -1, cv2.LINE_AA)
+                            cv2.circle(frame, sp_pos, 4, (0, 240, 255), 1, cv2.LINE_AA)
+
                 # Vibrant note label near bridge for clear feedback
                 note_tag = string.note_name.split()[0]
                 bx_t = int(round(p2[0])) + 8
@@ -1085,7 +1098,7 @@ class Guitar:
         # 5. Render Strumming Reticles directly on Right Hand Thumb (4) & Index (8)
         if self.rh_landmarks is not None:
             pts_r = self.rh_landmarks
-            for tip_id, color, name in [(4, (255, 0, 220), "CAI"), (8, (0, 240, 255), "TRO")]:
+            for tip_id, color, name in [(4, (255, 0, 220), "THUMB"), (8, (0, 240, 255), "INDEX")]:
                 tx = int(round(pts_r[tip_id, 0]))
                 ty = int(round(pts_r[tip_id, 1]))
                 # Concentric targeting circles on active picking fingers
@@ -1094,7 +1107,7 @@ class Guitar:
                 cv2.putText(
                     frame,
                     name,
-                    (tx - 12, ty - 16),
+                    (tx - 20, ty - 16),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.38,
                     color,

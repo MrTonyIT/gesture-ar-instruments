@@ -32,7 +32,7 @@ import numpy as np
 from audio_engine import AudioEngine
 from gesture_engine import AppState, GestureEngine
 from instruments import Guitar, Piano
-from vision_tracker import HandData, HandTracker, ThreadedCamera
+from vision_tracker import AsyncHandTracker, HandData, HandTracker, ThreadedCamera
 
 # Configure structured logging
 logging.basicConfig(
@@ -75,14 +75,19 @@ class GestureARApp:
         self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height)
         self.camera.start()
 
-        logger.info("Initializing Hand Tracker...")
-        self.hand_tracker = HandTracker(
+        logger.info("Initializing Asynchronous AI Hand Tracker Worker...")
+        self.async_tracker = AsyncHandTracker(
+            camera=self.camera,
             max_num_hands=2,
             min_detection_confidence=0.55,
             min_tracking_confidence=0.50,
             ema_alpha=0.65,
             filter_mode="one_euro",
+            model_complexity=1,
         )
+        self.async_tracker.start()
+        # Maintain hand_tracker alias for seamless compatibility
+        self.hand_tracker = self.async_tracker
 
         logger.info("Initializing Gesture Engine...")
         self.gesture_engine = GestureEngine()
@@ -125,9 +130,9 @@ class GestureARApp:
                     cv2.resizeWindow(window_name, self.width, self.height)
                     logger.info("Window synchronized to native camera resolution: %dx%d", self.width, self.height)
 
-                # 2. Process Hand Tracking on raw frame
-                # Coordinates returned are already mirrored and smoothed (X_screen = (1.0 - x) * W)
-                hands: List[HandData] = self.hand_tracker.process(raw_bgr_frame)
+                # 2. Retrieve Latest Hand Tracking with Predictive Kinematic Dead-Reckoning
+                # Coordinates are predicted forward to current timestamp for 60-120 FPS buttery motion
+                hands: List[HandData] = self.async_tracker.get_latest_hands(loop_start, extrapolate=True)
 
                 # 3. Mirror display frame horizontally for mirror-like AR experience
                 display_frame = cv2.flip(raw_bgr_frame, 1)
@@ -209,14 +214,23 @@ class GestureARApp:
                     self.gesture_engine.reset_to_idle()
                     self.piano = None
                     self.guitar = None
+                elif key in (ord("m"), ord("M")):
+                    # Toggle AI model complexity: ULTRA (1) vs HYPER-SPEED (0)
+                    new_mc = 0 if self.async_tracker.model_complexity == 1 else 1
+                    self.async_tracker.model_complexity = new_mc
+                    mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
+                    logger.info("AI tracking model switched to: %s", mode_lbl)
                 elif key in (ord("f"), ord("F")):
-                    # Toggle hand tracking filter mode: zero-lag deadband vs pure raw
-                    if self.hand_tracker.filter_mode == "zero_lag":
+                    # Cycle hand tracking filter mode: 1€ adaptive -> zero-lag deadband -> pure raw
+                    if self.hand_tracker.filter_mode == "one_euro":
+                        self.hand_tracker.filter_mode = "zero_lag"
+                        logger.info("Hand tracking switched to ZERO-LAG DEADBAND (0ms delay)")
+                    elif self.hand_tracker.filter_mode == "zero_lag":
                         self.hand_tracker.filter_mode = "raw"
                         logger.info("Hand tracking switched to PURE RAW (100% direct MediaPipe)")
                     else:
-                        self.hand_tracker.filter_mode = "zero_lag"
-                        logger.info("Hand tracking switched to ZERO-LAG DEADBAND (0ms delay + jitter-free)")
+                        self.hand_tracker.filter_mode = "one_euro"
+                        logger.info("Hand tracking switched to 1€ ADAPTIVE FILTER (Cinema-smooth & jitter-free)")
                 elif self.guitar is not None:
                     if key in (ord("1"), ord("c"), ord("C")):
                         self.guitar.active_chord = "C"
@@ -468,18 +482,26 @@ class GestureARApp:
         )
 
         # 4. Zone 3: Telemetry Capsule (Center) - Guaranteed Non-Overlapping Spacing
-        mode_tag = "SMOOTH-0ms" if self.hand_tracker.filter_mode == "one_euro" else ("0ms-LAG" if self.hand_tracker.filter_mode == "zero_lag" else "RAW")
-        fps_text = f"FPS: {self.fps:.1f} | RIG: {mode_tag} | HANDS: {hand_count}"
-        telem_size = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0]
-        telem_w = telem_size[0]
+        ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
+        model_tag = "ULTRA" if getattr(self.async_tracker, "model_complexity", 1) == 1 else "HYPER"
+        mode_tag = "1€" if self.hand_tracker.filter_mode == "one_euro" else ("0ms" if self.hand_tracker.filter_mode == "zero_lag" else "RAW")
 
         btn_zone_start = w - 515
         space_left = sx2 + 18
         space_right = btn_zone_start - 16
+        avail_w = space_right - space_left
+
+        if avail_w >= 380:
+            fps_text = f"FPS: {self.fps:.1f} | AI: {ai_fps:.1f} ({model_tag}) | RIG: {mode_tag} | HANDS: {hand_count}"
+        else:
+            fps_text = f"{self.fps:.0f}FPS | AI:{ai_fps:.0f}({model_tag}) | {mode_tag} | H:{hand_count}"
+
+        telem_size = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0]
+        telem_w = telem_size[0]
 
         # Position telemetry with graceful fallback if space is tight
-        if space_right - space_left > telem_w:
-            tx1 = space_left + ((space_right - space_left) - telem_w) // 2 - 8
+        if avail_w > telem_w:
+            tx1 = space_left + (avail_w - telem_w) // 2 - 8
         else:
             tx1 = space_left
 
@@ -503,6 +525,14 @@ class GestureARApp:
             1,
             cv2.LINE_AA,
         )
+
+        # 4b. Real-Time Audio Oscilloscope Waveform Capsule
+        # Rendered dynamically if space between telemetry and button zone permits (>= 105px)
+        rem_space = btn_zone_start - (tx2 + 14)
+        if rem_space >= 105:
+            vx1 = tx2 + 14
+            vw = min(130, rem_space - 10)
+            self._draw_audio_oscilloscope(frame, vx1, ty1, vw, ty2 - ty1)
 
         # 5. Zone 4: Top-Right Glassmorphic Action Buttons
         # 5a. Lock Sculpt Button (Hold fingertip for 1.0s to Toggle Shape Creation Lock)
@@ -638,8 +668,8 @@ class GestureARApp:
         )
         cv2.putText(
             frame,
-            "Quick: [L] LOCK (1s) | [R] RESET (0.7s) | [X] EXIT (3s)",
-            (w - 410, h - 7),
+            "Quick: [L] LOCK | [R] RESET | [M] AI | [F] RIG | [X] EXIT",
+            (w - 435, h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.36,
             (0, 220, 255),
@@ -1051,11 +1081,52 @@ class GestureARApp:
             cv2.LINE_AA,
         )
 
+    def _draw_audio_oscilloscope(self, frame: np.ndarray, x: int, y: int, w: int, h: int) -> None:
+        """Draws a sleek, futuristic audio oscilloscope capsule reacting to sound engine amplitude."""
+        if w < 30 or h < 10:
+            return
+
+        # 1. Glass background
+        roi = frame[y:y + h, x:x + w]
+        if roi.size > 0:
+            ov = np.full_like(roi, (16, 14, 24), dtype=np.uint8)
+            cv2.addWeighted(ov, 0.70, roi, 0.30, 0, roi)
+            frame[y:y + h, x:x + w] = roi
+
+        peak = getattr(self.audio_engine, "current_peak", 0.0)
+        border_col = (0, 255, 140) if peak > 0.15 else (55, 50, 75)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), border_col, 1, cv2.LINE_AA)
+
+        # 2. Animated harmonic waveform points
+        now_t = time.perf_counter()
+        num_pts = 24
+        mid_y = y + h // 2
+        pts = []
+        for i in range(num_pts):
+            u = i / (num_pts - 1)
+            px = int(x + 4 + u * (w - 8))
+            # Windowing envelope (sin) to taper ends to zero at edges
+            envelope = np.sin(np.pi * u)
+            # Dual frequency harmonic oscillation modulated by audio peak
+            osc = np.sin(u * 12.0 + now_t * 18.0) * 0.7 + np.cos(u * 22.0 - now_t * 24.0) * 0.3
+            amp = (peak * 0.85 + 0.06) * (h // 2 - 3) * envelope
+            py = int(mid_y + osc * amp)
+            pts.append([px, py])
+
+        pts_arr = np.array(pts, dtype=np.int32)
+        wave_col = (0, 255, 180) if peak > 0.10 else (0, 180, 220)
+        cv2.polylines(frame, [pts_arr], isClosed=False, color=wave_col, thickness=1, lineType=cv2.LINE_AA)
+
+        # Mini spark dot when audio peak is energetic
+        if peak > 0.25:
+            cv2.circle(frame, (x + w // 2, mid_y), 2, (255, 255, 255), -1, cv2.LINE_AA)
+
     def shutdown(self) -> None:
         """Clean resource release for camera, hand tracker, audio stream, and UI."""
         logger.info("Shutting down Gesture AR Instruments suite...")
+        if hasattr(self, "async_tracker"):
+            self.async_tracker.stop()
         self.camera.stop()
-        self.hand_tracker.close()
         self.audio_engine.stop()
         cv2.destroyAllWindows()
         logger.info("Shutdown complete.")

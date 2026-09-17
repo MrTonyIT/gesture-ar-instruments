@@ -328,6 +328,7 @@ class AudioEngine:
         self._stream: Optional[sd.OutputStream] = None
         self.is_running = False
         self.audio_available = False
+        self.current_peak: float = 0.0
 
     def start(self) -> bool:
         """
@@ -472,3 +473,5 @@ class AudioEngine:
 
         # Master soft-limiting via hyperbolic tangent to guarantee zero hard-clipping
         np.tanh(mix_buffer, out=outdata)
+        peak = float(np.max(np.abs(outdata)))
+        self.current_peak = 0.82 * self.current_peak + 0.18 * peak
