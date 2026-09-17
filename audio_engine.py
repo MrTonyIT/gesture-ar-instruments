@@ -65,12 +65,11 @@ class PianoVoice(Voice):
     Mathematical Model:
     - Fundamental Sine: sin(2 * pi * f * t)
     - Octave Harmonic: 0.5 * sin(2 * pi * 2f * t)
-    - Slight Triangle: 0.15 * (2 * |2 * (ft mod 1) - 1| - 1)
-    - Envelope: Exponential ADSR:
-        Attack  A = 0.005s (linear rise to peak)
-        Decay   D = 0.800s (exponential decay towards zero)
-        Sustain S = 0.000  (natural acoustic decay to silence)
-        Release R = 0.100s
+    - Subtle Triangle: 0.15 * (2 * |2 * (ft mod 1) - 1| - 1)
+    - Envelope: Percussive Attack-Decay (AD) exponential curve:
+        Attack A = 0.005s (linear ramp to peak)
+        Decay  D = 0.800s (natural acoustic exponential decay towards silence)
+        Total  T = 0.805s (voice marks finished upon reaching decay completion)
     """
 
     def __init__(
@@ -84,11 +83,9 @@ class PianoVoice(Voice):
         self.freq = max(20.0, float(freq))
         self.velocity = float(np.clip(velocity, 0.05, 1.0))
 
-        # ADSR parameters (in seconds)
+        # AD envelope parameters (in seconds)
         self.attack_time = 0.005
         self.decay_time = 0.800
-        self.release_time = 0.100
-        self.sustain_level = 0.0
 
         self.attack_samples = int(self.attack_time * self.sample_rate)
         self.decay_samples = int(self.decay_time * self.sample_rate)
@@ -120,7 +117,7 @@ class PianoVoice(Voice):
 
         raw_wave = (fundamental + octave + triangle) * (self.velocity * 0.7)
 
-        # 2. ADSR Envelope calculation
+        # 2. Percussive Attack-Decay (AD) Envelope calculation
         envelope = np.zeros(num_frames, dtype=np.float32)
 
         # Attack phase mask
@@ -506,9 +503,8 @@ class AudioEngine:
             if status.output_overflow:
                 self.overflow_count += 1
             self.last_callback_status = str(status)
-            logger.debug("Sounddevice callback status: %s", status)
 
-        # Snapshot active voices under lock in sub-microsecond time
+        # Snapshot active voices under a short critical section lock
         with self._lock:
             voices_to_render = self._active_voices[:]
 

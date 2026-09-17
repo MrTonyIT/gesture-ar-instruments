@@ -19,7 +19,7 @@
 
 **Gesture AR Instruments** transforms standard RGB webcams into low-latency augmented reality musical instruments. Without requiring specialized hardware, wearable gloves, or depth sensors, users can sculpt virtual instruments in 3D mid-air, manipulate them with natural dual-finger touch, snap guitar components together via magnetic plasma physics, strum authentic 9-chord progressions, or dock a 24-key piano onto a physical desk surface.
 
-All tracking algorithms, geometry primitives, audio synthesis voices, and gesture state transitions are verified by a **52-test headless pytest suite** and an empirical trajectory benchmark suite.
+All tracking algorithms, geometry primitives, audio synthesis voices, and gesture state transitions are verified by a **69-test headless pytest suite** and an empirical trajectory benchmark suite.
 
 ---
 
@@ -31,8 +31,7 @@ All tracking algorithms, geometry primitives, audio synthesis voices, and gestur
 - **Top Fretboard Selector HUD**: 9 interactive chord boxes `[1]` through `[9]` placed along the top edge. Chords can be switched via:
   1. **Direct Touch**: Reaching into the chord box with any fingertip.
   2. **Left-Hand Extended Fingers**: 1 finger = `C`, 2 fingers = `G`, 3 fingers = `Am`, 4 fingers = `Em`.
-  3. **Neck Slide Zones**: Sliding along the neck axis across 9 mapped zones.
-  4. **Keyboard Hotkeys**: Numbers `1`–`9` or letter keys `C`, `G`, `D`, `A`, `E`, `F`.
+  3. **Keyboard Hotkeys**: Numbers `1`–`9` or letter keys `C`, `G`, `D`, `A`, `E`, `F`.
 - **Dual-Finger Sculpt & Snap**: Touch thumb and index fingertips of both hands together, pull apart to project dynamic laser rails, sculpt the soundbox circle, and bring within 145px to trigger magnetic plasma assembly.
 
 ### 🎹 2. Ergonomic Desk-Surface Piano
@@ -149,11 +148,17 @@ pip install -r requirements-dev.txt
 
 # (Recommended for CI / Research Reproduction) Install with CI-verified direct dependency constraints:
 # pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+
+# Or install as an editable package with CLI entry point:
+pip install .
 ```
 
 ### 2. Launch the Application
 ```bash
-# Run with default webcam (1080p native auto-sync)
+# Run via console entry point:
+gesture-ar
+
+# Or run via Python module:
 python main.py
 
 # Specify camera device and window size
@@ -162,7 +167,7 @@ python main.py --camera-id 0 --width 1920 --height 1080
 
 ### 3. Running the Test Suite & Benchmarks
 ```bash
-# Run 52 headless unit tests
+# Run 69 headless unit tests
 python -m pytest -q
 
 # Run tracking filter benchmarks and generate CSV results
@@ -209,13 +214,17 @@ gesture-ar-instruments/
 │   ├── RESEARCH.md              # Research paper: filter math & empirical benchmark data
 │   └── USER_STUDY_PROTOCOL.md   # Formal 24-participant usability evaluation methodology
 ├── tests/
+│   ├── test_async_tracking.py   # Asynchronous timestamping & kinematic extrapolation
 │   ├── test_audio.py            # Synthesis engine, voicings, polyphony caps
 │   ├── test_filters.py          # 1€, Deadband, EMA, Raw filter algorithms
 │   ├── test_geometry.py         # Line-segment intersection & point-in-rect primitives
 │   ├── test_gestures.py         # State machine transitions, timeouts, sculpt & fusion
 │   ├── test_guitar.py           # 9-chord voicings, muted strings, strum debounce
 │   ├── test_hud.py              # Multi-resolution HUD layout (720p - 4K) & diagnostics
-│   └── test_piano.py            # Velocity gating, black key precedence, hover suppression
+│   ├── test_packaging.py        # PEP 517 build, entry points, metadata checks
+│   ├── test_piano.py            # Velocity gating, black key precedence, hover suppression
+│   ├── test_quality_profiles.py # Explicit HIGH, BALANCED, LOW profile switching
+│   └── test_ui_geometry.py      # Corner reticle non-duplicate line validation
 ├── audio_engine.py              # Low-latency procedural synth with 32-voice cap & soft limiter
 ├── benchmark_filters.py         # Empirical synthetic trajectory benchmark harness
 ├── geometry.py                  # Robust 2D computational geometry primitives

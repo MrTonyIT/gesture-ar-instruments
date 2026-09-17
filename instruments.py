@@ -266,7 +266,7 @@ class PianoKey:
     freq: float
     is_black: bool
     rect: Tuple[int, int, int, int]  # (xmin, ymin, xmax, ymax) in pixels
-    last_triggered_time: float = 0.0
+    last_triggered_time: float = -999.0
     is_active: bool = False
     active_until: float = 0.0
 
@@ -387,7 +387,12 @@ class Piano:
             px_ymax = int(round(self.NORM_YMAX * h))
             self._build_keyboard(px_xmin, px_ymin, px_xmax, px_ymax)
 
-    def update(self, hands: List[HandData], frame_shape: Optional[Tuple[int, int, int]] = None) -> None:
+    def update(
+        self,
+        hands: List[HandData],
+        frame_shape: Optional[Tuple[int, int, int]] = None,
+        current_time: Optional[float] = None,
+    ) -> None:
         """
         Hit-tests tracked fingertips with downward velocity gating.
         Evaluates Black Keys first to guarantee correct priority.
@@ -396,7 +401,7 @@ class Piano:
         if frame_shape is not None:
             self.sync_resolution(frame_shape)
 
-        now = time.perf_counter()
+        now = time.perf_counter() if current_time is None else float(current_time)
 
         for key in self.white_keys + self.black_keys:
             if key.is_active and now > key.active_until:
@@ -551,7 +556,7 @@ class ProjectedGuitarString:
     local_end: Tuple[float, float]    # On unrotated sprite
     screen_start: Tuple[float, float] = (0.0, 0.0)
     screen_end: Tuple[float, float] = (0.0, 0.0)
-    last_plucked_time: float = 0.0
+    last_plucked_time: float = -999.0
     vibration_amplitude: float = 0.0
     vibration_phase: float = 0.0
 
@@ -567,13 +572,42 @@ class Guitar:
         * Body / Soundhole -> Right Hand lap area.
         * Real-time rotation angle theta and scale based on distance between hands.
     - Projects 6 visible virtual strings over the soundhole and bridge.
-    - Multi-finger strumming: detects crossings by Thumb (4), Index (8), and all fingers.
+    - Multi-finger strumming: detects crossings by Thumb (4) and Index (8).
     - Transverse standing wave string vibration animation with neon glow.
     """
 
     CHORDS = ["C", "G", "D", "A", "E", "Am", "Em", "Dm", "F"]
     STRING_NAMES = ["E2 (6th)", "A2 (5th)", "D3 (4th)", "G3 (3rd)", "B3 (2nd)", "E4 (1st)"]
     STRUM_DEBOUNCE = 0.060  # 60ms lockout per string
+
+    # MIDI numbers for open strings: E2=40, A2=45, D3=50, G3=55, B3=59, E4=64
+    BASE_MIDI_NOTES = [40, 45, 50, 55, 59, 64]
+    NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+    @classmethod
+    def get_fretted_note(cls, chord_name: str, string_idx: int) -> Tuple[Optional[float], str, bool]:
+        """
+        Single source of truth for guitar string tuning under any chord.
+
+        Returns:
+            (resulting_freq, display_note, is_muted)
+            - resulting_freq: Fretted frequency in Hz, or None if string is muted.
+            - display_note: Exact pitch label (e.g. 'C3', 'E4') or 'X' if muted.
+            - is_muted: True if string is not sounded in the chord voicing.
+        """
+        string_idx = int(np.clip(string_idx, 0, 5))
+        frets = AudioEngine.CHORD_FRETS.get(chord_name, AudioEngine.CHORD_FRETS["C"])
+        fret_offset = frets[string_idx]
+
+        if fret_offset is None:
+            return None, "X", True
+
+        base_freq = AudioEngine.GUITAR_OPEN_FREQS[string_idx]
+        chord_freq = float(base_freq * (2.0 ** (fret_offset / 12.0)))
+        midi_note = cls.BASE_MIDI_NOTES[string_idx] + fret_offset
+        octave = (midi_note // 12) - 1
+        note_name = f"{cls.NOTE_NAMES[midi_note % 12]}{octave}"
+        return chord_freq, note_name, False
 
     # Sprite reference anchor coordinates (on unrotated 960x360 sprite)
     # Neck anchor aligned right at Fret 1 (150px), directly adjacent to the nut (130px) and headstock (30-130px)
@@ -605,11 +639,10 @@ class Guitar:
         self.lh_landmarks: Optional[np.ndarray] = None
         self.lh_finger_count: int = 1
         self.extended_finger_flags: List[bool] = [True, False, False, False]
-        self.fret_slide_chord: Optional[str] = "C"
         self.rh_landmarks: Optional[np.ndarray] = None
         self._prev_strum_finger_positions: Dict[int, Tuple[float, float]] = {}
-        self._prev_right_timestamp: float = time.perf_counter()
-        self._last_vibe_time: float = time.perf_counter()
+        self._prev_right_timestamp: Optional[float] = None
+        self._last_vibe_time: Optional[float] = None
 
         # 3. Setup strings in sprite local coordinate system
         self.strings: List[ProjectedGuitarString] = []
@@ -718,12 +751,17 @@ class Guitar:
             return True
         return False
 
-    def update(self, hands: List[HandData], frame_shape: Optional[Tuple[int, int, int]] = None) -> None:
+    def update(
+        self,
+        hands: List[HandData],
+        frame_shape: Optional[Tuple[int, int, int]] = None,
+        current_time: Optional[float] = None,
+    ) -> None:
         """
         Dynamically anchors guitar pose to tracked hands, updates string projections,
         and tests multi-finger strum collisions.
         """
-        now = time.perf_counter()
+        now = time.perf_counter() if current_time is None else float(current_time)
         shape = frame_shape or (720, 1280, 3)
         h_bg, w_bg = shape[:2]
 
@@ -801,10 +839,9 @@ class Guitar:
             self.chord_boxes[chord] = (bx1, by1, bx2, by2)
 
         # 4. Left Hand Chord Selection:
-        # METHOD 1 (PRIMARY): Number of Extended Fingers (1=C, 2=G, 3=Am, 4=Em)
-        # METHOD 2: Direct Touch on Top 9 Chord Boxes
-        # METHOD 3: Fretboard Horizontal Position along the neck (9 zones)
-        # METHOD 4: Thumb Pinch
+        # METHOD 1 (PRIMARY): Direct Touch on Top 9 Chord Boxes
+        # METHOD 2: Deliberate Thumb Pinch (Index=C, Middle=G, Ring=D, Pinky=Am)
+        # METHOD 3: Number of Extended Fingers (1=C, 2=G, 3=Am, 4=Em)
         if left_hand is not None:
             pts = left_hand.landmarks_px
             wrist = pts[0, :2]
@@ -819,13 +856,6 @@ class Guitar:
             self.extended_finger_flags = [ext_index, ext_middle, ext_ring, ext_pinky]
             finger_count = sum(self.extended_finger_flags)
             self.lh_finger_count = finger_count
-
-            # Check Fretboard Horizontal Position along the neck (9 zones)
-            palm_x = float(pts[9, 0])
-            slide_step = 35.0
-            slide_base = 200.0
-            zone_idx = int(np.clip((palm_x - slide_base) / slide_step, 0, len(self.CHORDS) - 1))
-            self.fret_slide_chord = self.CHORDS[zone_idx]
 
             # Check Thumb Pinch with any finger as alternative
             thumb_tip = pts[4, :2]
@@ -873,7 +903,10 @@ class Guitar:
         # 5. Right Hand Strumming: Only Thumb (4) and Index (8)
         if right_hand is not None:
             self.rh_landmarks = right_hand.landmarks_px.copy()
-            dt = max(0.001, now - self._prev_right_timestamp)
+            if self._prev_right_timestamp is None or now < self._prev_right_timestamp:
+                dt = 0.016
+            else:
+                dt = max(0.001, min(0.1, now - self._prev_right_timestamp))
 
             for tip_id in self.strum_tip_ids:
                 curr_pos = tuple(right_hand.landmarks_px[tip_id, :2].astype(float))
@@ -914,7 +947,10 @@ class Guitar:
             self._prev_strum_finger_positions.clear()
 
         # 6. Update String Transverse Vibration Dynamics
-        dt_vibe = max(0.001, now - self._last_vibe_time)
+        if self._last_vibe_time is None or now < self._last_vibe_time:
+            dt_vibe = 0.016
+        else:
+            dt_vibe = max(0.001, min(0.1, now - self._last_vibe_time))
         self._last_vibe_time = now
         for string in self.strings:
             if string.vibration_amplitude > 0.05:
@@ -978,7 +1014,7 @@ class Guitar:
 
         # 3. Render 6 Projected Strings with Transverse Standing Wave Oscillation
         for string in self.strings:
-            is_muted = AudioEngine.is_string_muted(self.active_chord, string.index)
+            _, note_tag, is_muted = self.get_fretted_note(self.active_chord, string.index)
             p1 = np.array(string.screen_start, dtype=np.float32)
             p2 = np.array(string.screen_end, dtype=np.float32)
             seg_vec = p2 - p1
@@ -1027,7 +1063,6 @@ class Guitar:
                 if is_muted:
                     cv2.putText(frame, "X", (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 220), 1, cv2.LINE_AA)
                 else:
-                    note_tag = string.note_name.split()[0]
                     cv2.putText(frame, note_tag, (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 255), 1, cv2.LINE_AA)
             else:
                 # Resting string
@@ -1041,11 +1076,13 @@ class Guitar:
                     thickness = max(1, 3 - string.index // 2)
                 cv2.line(frame, pt1_i, pt2_i, color, thickness, lineType=cv2.LINE_AA)
 
-                # Show 'X' near bridge for muted string even when resting
+                # Show note name or 'X' near bridge even when resting
+                bx_t = int(round(p2[0])) + 8
+                by_t = int(round(p2[1])) + 4
                 if is_muted:
-                    bx_t = int(round(p2[0])) + 8
-                    by_t = int(round(p2[1])) + 4
-                    cv2.putText(frame, "x", (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 100, 160), 1, cv2.LINE_AA)
+                    cv2.putText(frame, "X", (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 100, 160), 1, cv2.LINE_AA)
+                else:
+                    cv2.putText(frame, note_tag, (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 200, 220), 1, cv2.LINE_AA)
 
         # 4. Render AR HUD Feedback directly on Left Hand
         if self.lh_landmarks is not None:

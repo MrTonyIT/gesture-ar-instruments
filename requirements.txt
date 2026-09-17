@@ -1,7 +1,6 @@
-# Flexible runtime dependency declarations for packaging & development
+# Runtime installation contract
 # For CI-verified direct dependency constraints, install with: -c constraints.txt
-opencv-python>=4.8.0
-mediapipe>=0.10.0,<0.10.15
-numpy>=1.24.0,<2.0.0
+opencv-contrib-python>=4.8.0
+mediapipe>=0.10.0
+numpy>=1.24.0
 sounddevice>=0.4.6
-scipy>=1.10.0

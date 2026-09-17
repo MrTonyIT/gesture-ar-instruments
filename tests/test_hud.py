@@ -14,7 +14,7 @@ from vision_tracker import HandData
 
 @pytest.fixture
 def app():
-    application = GestureARApp(camera_id=0, width=1920, height=1080)
+    application = GestureARApp(camera_id=0, width=1920, height=1080, start_threads=False)
     try:
         yield application
     finally:
@@ -67,10 +67,10 @@ def test_hud_rendering_and_layout(app):
             space_right = btn_zone_start - 16
             avail_w = space_right - space_left
 
-            if avail_w >= 380:
-                fps_text = "FPS: 60.0 | AI: 58.0 (ULTRA) | RIG: 1€ | HANDS: 2"
+            if avail_w >= 410:
+                fps_text = "FPS: 60.0 | AI: 58.0 (ULTRA) | 1-EURO | Q:HIG | H:2"
             else:
-                fps_text = "60FPS | AI:58(ULTRA) | 1€ | H:2"
+                fps_text = "60FPS | AI:58 | 1-EURO | H:2"
 
             telem_size = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0]
             telem_w = telem_size[0]

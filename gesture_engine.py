@@ -30,7 +30,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from geometry import segments_intersect
 from vision_tracker import HandData
 
 logger = logging.getLogger("GestureEngine")
@@ -218,16 +217,22 @@ class GestureEngine:
         self._lock_triggered_in_touch = False
         self.lock_just_toggled = False
 
-    def update(self, hands: List[HandData], frame_shape: Tuple[int, int, int]) -> None:
+    def update(
+        self,
+        hands: List[HandData],
+        frame_shape: Tuple[int, int, int],
+        current_time: Optional[float] = None,
+    ) -> None:
         """
         Updates gesture evaluation and ergonomic state transitions.
 
         Args:
             hands: Filtered HandData list.
             frame_shape: (height, width, channels) of the display frame.
+            current_time: Optional timestamp for deterministic headless testing.
         """
         h, w, _ = frame_shape
-        now = time.perf_counter()
+        now = time.perf_counter() if current_time is None else float(current_time)
 
         # 1. Check Exit Button Touch (Hold fingertip inside top-right button for 3.0s)
         btn_w, btn_h = 160, 36
@@ -840,132 +845,6 @@ class GestureEngine:
         elif self.state == AppState.GUITAR_ACTIVE:
             self.guitar_zones = diag_guitar_px
 
-    def _check_crossed_hands(self, hands: List[HandData]) -> Tuple[bool, Tuple[int, int]]:
-        """
-        Detects if both hands/wrists/fingers are crossed to form an 'X' shape.
-        Returns (is_crossed, (center_x, center_y)).
-        """
-        if len(hands) < 2:
-            return False, (0, 0)
-
-        h1, h2 = hands[0], hands[1]
-        w1 = tuple(h1.landmarks_px[0, :2])
-        m1 = tuple(h1.landmarks_px[12, :2])  # Middle tip
-        p1 = tuple(h1.landmarks_px[9, :2])   # Middle MCP
-        i1 = tuple(h1.landmarks_px[8, :2])   # Index tip
-
-        w2 = tuple(h2.landmarks_px[0, :2])
-        m2 = tuple(h2.landmarks_px[12, :2])
-        p2 = tuple(h2.landmarks_px[9, :2])
-        i2 = tuple(h2.landmarks_px[8, :2])
-
-        # Test 1: Segment intersection between line (wrist -> middle tip)
-        crossed = segments_intersect(w1, m1, w2, m2)
-
-        # Test 2: Segment intersection between line (wrist -> MCP)
-        if not crossed:
-            crossed = segments_intersect(w1, p1, w2, p2)
-
-        # Test 3: Segment intersection between line (MCP -> Index tip) - Crossing index fingers
-        if not crossed:
-            crossed = segments_intersect(p1, i1, p2, i2)
-
-        # Test 4: Overlapping wrists/forearms in close proximity (< 120px) with crossed X ordering
-        if not crossed:
-            d_wrist = float(np.linalg.norm(np.array(w1) - np.array(w2)))
-            d_palms = float(np.linalg.norm(np.array(p1) - np.array(p2)))
-            if d_wrist < 120.0 and d_palms < 160.0:
-                # Crossed if Left hand wrist is to the right of Right hand wrist
-                if (h1.handedness == "Left" and w1[0] > w2[0]) or (h1.handedness == "Right" and w1[0] < w2[0]):
-                    crossed = True
-
-        if crossed:
-            cx = int((w1[0] + w2[0] + m1[0] + m2[0]) / 4)
-            cy = int((w1[1] + w2[1] + m1[1] + m2[1]) / 4)
-            return True, (cx, cy)
-
-        return False, (0, 0)
-
-    def _check_raised_hands(self, hands: List[HandData], frame_height: int) -> Tuple[bool, Tuple[int, int]]:
-        """
-        Returns True if both hands are raised into upper screen area (Y < 22% of height).
-        """
-        if len(hands) < 2:
-            return False, (0, 0)
-
-        ceiling = frame_height * self.RESET_CEILING_RATIO
-        w0 = hands[0].landmarks_px[0, 1]
-        w1 = hands[1].landmarks_px[0, 1]
-        m0 = hands[0].landmarks_px[12, 1]
-        m1 = hands[1].landmarks_px[12, 1]
-
-        if (w0 < ceiling and w1 < ceiling) or (m0 < ceiling * 0.9 and m1 < ceiling * 0.9):
-            cx = int((hands[0].landmarks_px[0, 0] + hands[1].landmarks_px[0, 0]) / 2)
-            cy = int(ceiling)
-            return True, (cx, cy)
-        return False, (0, 0)
-
-    def _is_open_palm(self, hand: HandData) -> bool:
-        """Detects if all 5 fingers are fully extended (Open Palm 'Stop' sign)."""
-        pts = hand.landmarks_px
-        wrist = pts[0, :2]
-        # Check all 4 long fingers (8, 12, 16, 20) are extended well past their PIP joints
-        for tip_id, pip_id in [(8, 6), (12, 10), (16, 14), (20, 18)]:
-            d_tip = np.linalg.norm(pts[tip_id, :2] - wrist)
-            d_pip = np.linalg.norm(pts[pip_id, :2] - wrist)
-            if d_tip < d_pip * 1.20:
-                return False
-        # Check thumb extended
-        d_thumb = np.linalg.norm(pts[4, :2] - pts[2, :2])
-        d_thumb_ip = np.linalg.norm(pts[3, :2] - pts[2, :2])
-        if d_thumb < d_thumb_ip * 1.10:
-            return False
-        return True
-
-    def _check_double_open_palms(self, hands: List[HandData]) -> Tuple[bool, Tuple[int, int]]:
-        """Returns True if both hands are open palms facing the camera."""
-        if len(hands) < 2:
-            return False, (0, 0)
-        if self._is_open_palm(hands[0]) and self._is_open_palm(hands[1]):
-            cx = int((hands[0].landmarks_px[9, 0] + hands[1].landmarks_px[9, 0]) / 2)
-            cy = int((hands[0].landmarks_px[9, 1] + hands[1].landmarks_px[9, 1]) / 2)
-            return True, (cx, cy)
-        return False, (0, 0)
-
-    def _check_raised_right_hand(self, right_hand: Optional[HandData], frame_height: int) -> Tuple[bool, Tuple[int, int]]:
-        """
-        Detects if the user's Right Hand is raised with open palm facing the camera (Hold for 0.5s to Reset).
-        Returns (is_raised, (palm_center_x, palm_center_y)).
-        """
-        if right_hand is None:
-            return False, (0, 0)
-
-        pts = right_hand.landmarks_px
-        wrist = pts[0, :2]
-        m_tip = pts[12, :2]
-
-        # 1. Hand must be oriented upward: Middle fingertip above wrist by at least 25px
-        if m_tip[1] >= (wrist[1] - 25.0):
-            return False, (0, 0)
-
-        # 2. Hand must be raised in upper 65% of screen height
-        if m_tip[1] > (frame_height * 0.65):
-            return False, (0, 0)
-
-        # 3. Open palm: at least 3 fingers of (Index, Middle, Ring, Pinky) are extended
-        ext_count = 0
-        for tip_id, pip_id in [(8, 6), (12, 10), (16, 14), (20, 18)]:
-            d_tip = np.linalg.norm(pts[tip_id, :2] - wrist)
-            d_pip = np.linalg.norm(pts[pip_id, :2] - wrist)
-            if d_tip > d_pip * 1.12:
-                ext_count += 1
-
-        if ext_count >= 3:
-            cx = int(pts[9, 0])
-            cy = int(pts[9, 1])
-            return True, (cx, cy)
-
-        return False, (0, 0)
 
     def _is_l_shape(self, hand: Optional[HandData]) -> bool:
         """

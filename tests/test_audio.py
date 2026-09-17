@@ -155,3 +155,67 @@ def test_audio_callback_rendering_and_telemetry(audio_engine):
     assert audio_engine.underflow_count == 1
     assert audio_engine.last_callback_status == "output underflow"
 
+
+def test_piano_voice_lifecycle_and_envelope_completion():
+    """Piano voice completes after its total duration and marks itself finished."""
+    voice = PianoVoice(freq=440.0, velocity=0.8, sample_rate=44100)
+    assert not voice.is_finished()
+
+    # Total duration is attack + decay samples = 0.005s + 0.800s = 0.805s * 44100 = 35500 samples
+    total_samples = voice.total_samples
+    assert total_samples == int(0.005 * 44100) + int(0.800 * 44100)
+
+    # Render in chunks
+    chunk_size = 4096
+    rendered_total = 0
+    while rendered_total < total_samples + chunk_size:
+        block = voice.render(chunk_size)
+        assert np.all(np.isfinite(block))
+        rendered_total += chunk_size
+
+    assert voice.is_finished() is True
+
+    # Subsequent render returns zeros
+    extra_block = voice.render(chunk_size)
+    assert np.all(extra_block == 0.0)
+
+
+def test_voice_panning_stereo_shape():
+    """Pan value controls left and right channel gain appropriately."""
+    # Hard left pan = -1.0
+    voice_l = PianoVoice(freq=440.0, velocity=1.0, pan=-1.0)
+    block_l = voice_l.render(256)
+    assert np.max(np.abs(block_l[:, 0])) > 0.0
+    assert np.max(np.abs(block_l[:, 1])) == pytest.approx(0.0, abs=1e-5)
+
+    # Hard right pan = 1.0
+    voice_r = PianoVoice(freq=440.0, velocity=1.0, pan=1.0)
+    block_r = voice_r.render(256)
+    assert np.max(np.abs(block_r[:, 1])) > 0.0
+    assert np.max(np.abs(block_r[:, 0])) == pytest.approx(0.0, abs=1e-5)
+
+
+def test_finished_voice_cleanup_in_callback(audio_engine):
+    """AudioEngine purges completed voices during the callback."""
+    voice = PianoVoice(freq=440.0, velocity=1.0, sample_rate=audio_engine.sample_rate)
+    with audio_engine._lock:
+        audio_engine._active_voices.append(voice)
+    assert audio_engine.get_active_voice_count() == 1
+
+    # Render enough frames in callback to complete voice
+    outdata = np.zeros((4096, 2), dtype=np.float32)
+
+    class CleanStatus:
+        output_underflow = False
+        output_overflow = False
+
+        def __bool__(self):
+            return False
+
+    for _ in range(12):
+        audio_engine._audio_callback(outdata, 4096, {}, CleanStatus())
+
+    # Voice completed and was purged under lock
+    assert voice.is_finished() is True
+    assert audio_engine.get_active_voice_count() == 0
+

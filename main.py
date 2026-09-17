@@ -15,10 +15,10 @@ Integrates:
 Controls:
 - Both Hands 'L' Shape: Spawn & Lock Piano to desk surface (hold 1.2s).
 - Thumb & Index Touch + Pull Apart: Sculpt virtual guitar neck rails; sculpt soundbox and snap together.
-- Fretboard Hotkeys 1–9 or C, G, D, A, E, F: Select authentic guitar chords.
+- Fretboard Hotkeys 1-9 or C, G, D, A, E, F: Select authentic guitar chords.
 - F3, Tab, or ` : Toggle Developer Diagnostics HUD.
 - V: Cycle Visual Quality Profiles (HIGH, BALANCED, LOW).
-- F: Cycle Hand Tracking Filters (1€ -> Deadband -> EMA -> Raw).
+- F: Cycle Hand Tracking Filters (1-Euro -> Deadband -> EMA -> Raw).
 - Hold [RESET] Button (0.7s) or Both Wrists to Top 10%: Global Reset to IDLE.
 - Hold [EXIT] Button (3.0s), 'q', or ESC: Graceful exit.
 """
@@ -26,10 +26,11 @@ Controls:
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import logging
 import sys
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -59,6 +60,46 @@ HAND_CONNECTIONS = [
 ]
 
 
+@dataclass(frozen=True)
+class QualityProfileConfig:
+    """Explicit performance and visual quality profile configuration."""
+
+    name: str
+    model_complexity: int
+    max_particles: int
+    enable_glow_effects: bool
+    enable_shockwave_flash: bool
+    oscilloscope_points: int
+
+
+QUALITY_PROFILES: Dict[str, QualityProfileConfig] = {
+    "HIGH": QualityProfileConfig(
+        name="HIGH",
+        model_complexity=1,
+        max_particles=18,
+        enable_glow_effects=True,
+        enable_shockwave_flash=True,
+        oscilloscope_points=32,
+    ),
+    "BALANCED": QualityProfileConfig(
+        name="BALANCED",
+        model_complexity=0,
+        max_particles=8,
+        enable_glow_effects=True,
+        enable_shockwave_flash=False,
+        oscilloscope_points=24,
+    ),
+    "LOW": QualityProfileConfig(
+        name="LOW",
+        model_complexity=0,
+        max_particles=0,
+        enable_glow_effects=False,
+        enable_shockwave_flash=False,
+        oscilloscope_points=12,
+    ),
+}
+
+
 class GestureARApp:
     """AR Instruments Suite Orchestrator."""
 
@@ -67,30 +108,47 @@ class GestureARApp:
         camera_id: int = 0,
         width: int = 1920,
         height: int = 1080,
+        audio_engine: Optional[AudioEngine] = None,
+        camera: Optional[ThreadedCamera] = None,
+        tracker: Optional[AsyncHandTracker] = None,
+        start_threads: bool = True,
+        quality_profile: str = "HIGH",
     ) -> None:
         self.width = width
         self.height = height
 
-        # 1. Initialize Subsystems
-        logger.info("Initializing Audio Engine...")
-        self.audio_engine = AudioEngine(sample_rate=44100, block_size=256)
-        self.audio_engine.start()
+        # 1. Initialize Subsystems (supports dependency injection for headless testing)
+        if audio_engine is not None:
+            self.audio_engine = audio_engine
+        else:
+            logger.info("Initializing Audio Engine...")
+            self.audio_engine = AudioEngine(sample_rate=44100, block_size=256)
+            if start_threads:
+                self.audio_engine.start()
 
-        logger.info("Initializing Threaded Camera on source %s (Target: %dx%d)...", camera_id, self.width, self.height)
-        self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height)
-        self.camera.start()
+        if camera is not None:
+            self.camera = camera
+        else:
+            logger.info("Initializing Threaded Camera on source %s (Target: %dx%d)...", camera_id, self.width, self.height)
+            self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height)
+            if start_threads:
+                self.camera.start()
 
-        logger.info("Initializing Asynchronous AI Hand Tracker Worker...")
-        self.async_tracker = AsyncHandTracker(
-            camera=self.camera,
-            max_num_hands=2,
-            min_detection_confidence=0.55,
-            min_tracking_confidence=0.50,
-            ema_alpha=0.65,
-            filter_mode="one_euro",
-            model_complexity=1,
-        )
-        self.async_tracker.start()
+        if tracker is not None:
+            self.async_tracker = tracker
+        else:
+            logger.info("Initializing Asynchronous AI Hand Tracker Worker...")
+            self.async_tracker = AsyncHandTracker(
+                camera=self.camera,
+                max_num_hands=2,
+                min_detection_confidence=0.55,
+                min_tracking_confidence=0.50,
+                ema_alpha=0.65,
+                filter_mode="one_euro",
+                model_complexity=1,
+            )
+            if start_threads:
+                self.async_tracker.start()
         # Maintain hand_tracker alias for seamless compatibility
         self.hand_tracker = self.async_tracker
 
@@ -103,7 +161,7 @@ class GestureARApp:
 
         # Telemetry & Developer Diagnostics HUD
         self.show_diagnostics: bool = False
-        self.quality_profile: str = "HIGH"  # "HIGH", "BALANCED", "LOW"
+        self.set_quality_profile(quality_profile)
         self.telemetry = {
             "cam_ms": 0.0,
             "track_ms": 0.0,
@@ -120,6 +178,16 @@ class GestureARApp:
         # Screen overflow auto-disappearance alert
         self.last_overflow_time: float = 0.0
         self.overflow_msg: str = ""
+
+    def set_quality_profile(self, profile: str) -> None:
+        """Applies explicit quality profile (HIGH, BALANCED, LOW)."""
+        key = profile.upper()
+        if key not in QUALITY_PROFILES:
+            key = "HIGH"
+        self.quality_profile = key
+        self.quality_config = QUALITY_PROFILES[key]
+        if hasattr(self, "async_tracker") and self.async_tracker is not None:
+            self.async_tracker.model_complexity = self.quality_config.model_complexity
 
     def run(self) -> None:
         """Main application lifecycle loop."""
@@ -259,14 +327,11 @@ class GestureARApp:
                 elif key in (ord("v"), ord("V")):
                     # Cycle visual quality profile: HIGH -> BALANCED -> LOW -> HIGH
                     if self.quality_profile == "HIGH":
-                        self.quality_profile = "BALANCED"
-                        self.async_tracker.model_complexity = 0
+                        self.set_quality_profile("BALANCED")
                     elif self.quality_profile == "BALANCED":
-                        self.quality_profile = "LOW"
-                        self.async_tracker.model_complexity = 0
+                        self.set_quality_profile("LOW")
                     else:
-                        self.quality_profile = "HIGH"
-                        self.async_tracker.model_complexity = 1
+                        self.set_quality_profile("HIGH")
                     logger.info("Visual Quality Profile switched to: %s", self.quality_profile)
                 elif key in (ord("r"), ord("R")):
                     # Manual reset shortcut
@@ -280,7 +345,7 @@ class GestureARApp:
                     mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
                     logger.info("AI tracking model switched to: %s", mode_lbl)
                 elif key in (ord("f"), ord("F")):
-                    # Cycle hand tracking filter mode: 1€ -> deadband -> ema -> raw -> 1€
+                    # Cycle hand tracking filter mode: 1-Euro -> deadband -> ema -> raw -> 1-Euro
                     cur_mode = self.hand_tracker.filter_mode.lower()
                     if cur_mode == "one_euro":
                         self.hand_tracker.filter_mode = "deadband"
@@ -293,7 +358,7 @@ class GestureARApp:
                         logger.info("Hand tracking switched to PURE RAW (Direct MediaPipe)")
                     else:
                         self.hand_tracker.filter_mode = "one_euro"
-                        logger.info("Hand tracking switched to 1€ ADAPTIVE FILTER (Casiez et al. 2012)")
+                        logger.info("Hand tracking switched to 1-EURO ADAPTIVE FILTER (Casiez et al. 2012)")
                 elif key in (ord("p"), ord("P")):
                     # Open native hardware camera properties dialog
                     logger.info("Requesting hardware camera properties dialog [P]...")
@@ -355,12 +420,12 @@ class GestureARApp:
 
             # Holographic guidance for sculpting and assembling guitar
             if self.gesture_engine.is_sculpt_locked:
-                cv2.putText(overlay_guide, "[🔒 SCULPT CREATION LOCKED - HAND TRACKING RIG STILL ACTIVE]", (int(0.18 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 180, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[LOCKED] SCULPT CREATION LOCKED - HAND TRACKING RIG STILL ACTIVE", (int(0.18 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 180, 255), 1, cv2.LINE_AA)
                 cv2.putText(overlay_guide, "[HOLD [L] BUTTON (1s) AT TOP-RIGHT TO UNLOCK CREATION]", (int(0.24 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1, cv2.LINE_AA)
             else:
-                cv2.putText(overlay_guide, "[🖐️ PINCH THUMB & INDEX (BOTH HANDS) TO SCULPT NECK]", (int(0.06 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 200, 180), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[🖐️ RIGHT HAND PINCH & EXPAND: SOUNDBOX]", (int(0.56 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 50, 180), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[⚡ BRING BOTH PARTS CLOSE (<145px) TO ASSEMBLE GUITAR ⚡]", (int(0.28 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[PINCH] PINCH THUMB & INDEX (BOTH HANDS) TO SCULPT NECK", (int(0.06 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 200, 180), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[EXPAND] RIGHT HAND PINCH & EXPAND: SOUNDBOX", (int(0.56 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 50, 180), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[FUSION] BRING BOTH PARTS CLOSE (<145px) TO ASSEMBLE GUITAR", (int(0.24 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1, cv2.LINE_AA)
             cv2.addWeighted(overlay_guide, 0.60, frame, 0.40, 0, frame)
 
         # 3. Render Circular Progress Bars for Gesture Spawning, Reset, Lock, and Exit
@@ -410,10 +475,11 @@ class GestureARApp:
             pts = hand.landmarks_px.astype(int)
 
             # 4a. Translucent Cyber Palm Mesh (Adds smooth 3D body & volume to hand rig)
-            palm_poly = pts[[0, 1, 5, 9, 13, 17], :2]
-            overlay_palm = frame.copy()
-            cv2.fillPoly(overlay_palm, [palm_poly], glow_color)
-            cv2.addWeighted(overlay_palm, 0.16, frame, 0.84, 0, frame)
+            if self.quality_config.enable_glow_effects:
+                palm_poly = pts[[0, 1, 5, 9, 13, 17], :2]
+                overlay_palm = frame.copy()
+                cv2.fillPoly(overlay_palm, [palm_poly], glow_color)
+                cv2.addWeighted(overlay_palm, 0.16, frame, 0.84, 0, frame)
 
             # 4b. Dual-layer cyber bones with natural anatomical tapering
             for idx1, idx2 in HAND_CONNECTIONS:
@@ -428,7 +494,8 @@ class GestureARApp:
                 else:
                     th_glow, th_core = 4, 2  # Intermediate phalanges
 
-                cv2.line(frame, pt1, pt2, glow_color, th_glow, cv2.LINE_AA)
+                if self.quality_config.enable_glow_effects:
+                    cv2.line(frame, pt1, pt2, glow_color, th_glow, cv2.LINE_AA)
                 cv2.line(frame, pt1, pt2, primary_color, th_core, cv2.LINE_AA)
                 cv2.line(frame, pt1, pt2, (255, 255, 255), 1, cv2.LINE_AA)
 
@@ -560,7 +627,7 @@ class GestureARApp:
         model_tag = "ULTRA" if getattr(self.async_tracker, "model_complexity", 1) == 1 else "HYPER"
         filt_m = self.hand_tracker.filter_mode.lower()
         if filt_m == "one_euro":
-            mode_tag = "1€"
+            mode_tag = "1-EURO"
         elif filt_m in ("deadband", "zero_lag"):
             mode_tag = "DEADBAND"
         elif filt_m == "ema":
@@ -899,7 +966,7 @@ class GestureARApp:
         cv2.line(frame, (x1, y1), (x1, y1 + corner_len), color, thick)
         # Top-Right
         cv2.line(frame, (x2, y1), (x2 - corner_len, y1), color, thick)
-        cv2.line(frame, (x2, y1), (x2 - corner_len, y1), color, thick)
+        cv2.line(frame, (x2, y1), (x2, y1 + corner_len), color, thick)
         # Bottom-Left
         cv2.line(frame, (x1, y2), (x1 + corner_len, y2), color, thick)
         cv2.line(frame, (x1, y2), (x1, y2 - corner_len), color, thick)
@@ -987,12 +1054,12 @@ class GestureARApp:
                         fx, fy = int((p4[0] + p8[0]) / 2), int((p4[1] + p8[1]) / 2)
                         cv2.line(frame, (p4[0], p4[1]), (p8[0], p8[1]), (0, 200, 255), 1, cv2.LINE_AA)
                         cv2.circle(frame, (fx, fy), 6, (0, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "✌️ DUAL-TOUCH", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "[DUAL-TOUCH]", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1, cv2.LINE_AA)
                         break
 
             # Dynamic Glassmorphic Status Badge
             if is_dragging:
-                badge = "[ ✌️ DUAL-TOUCH: DRAGGING SOUNDBOX ]"
+                badge = "[ DUAL-TOUCH: DRAGGING SOUNDBOX ]"
             elif is_locked:
                 badge = "[ SOUNDBOX LOCKED: TOUCH THUMB & INDEX TO DRAG ]"
             elif ge.soundbox_hold_progress > 0.0:
@@ -1013,7 +1080,7 @@ class GestureARApp:
             cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), col_primary, 1, cv2.LINE_AA)
             cv2.putText(frame, badge, (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.40, col_primary, 1, cv2.LINE_AA)
 
-        # 2. Both Hands: Rectangle / Fretboard & Neck (Cần đàn)
+        # 2. Both Hands: Rectangle / Fretboard & Neck (Can dan)
         if ge._neck_touch_primed and not ge.neck_sculpted and ge.neck_progress <= 0.05:
             # Two hands just touched! Show glowing contact point
             tx, ty = ge._neck_touch_center
@@ -1022,7 +1089,7 @@ class GestureARApp:
             cv2.circle(frame, (tx, ty), 6, (255, 255, 255), -1, cv2.LINE_AA)
             cv2.putText(
                 frame,
-                "✨ CONTACT DETECTED! PULL APART TO SCULPT NECK ✨",
+                ">> CONTACT DETECTED! PULL APART TO SCULPT NECK <<",
                 (max(20, tx - 190), max(30, ty - 26)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.46,
@@ -1119,12 +1186,12 @@ class GestureARApp:
                         fx, fy = int((p4[0] + p8[0]) / 2), int((p4[1] + p8[1]) / 2)
                         cv2.line(frame, (p4[0], p4[1]), (p8[0], p8[1]), (100, 255, 180), 1, cv2.LINE_AA)
                         cv2.circle(frame, (fx, fy), 6, (50, 255, 200), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "✌️ DUAL-TOUCH", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (50, 255, 200), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "[DUAL-TOUCH]", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (50, 255, 200), 1, cv2.LINE_AA)
                         break
 
             # Dynamic Glassmorphic Status Badge
             if is_dragging:
-                badge = "[ ✌️ DUAL-TOUCH: DRAGGING NECK ]"
+                badge = "[ DUAL-TOUCH: DRAGGING NECK ]"
             elif is_locked:
                 badge = "[ NECK LOCKED: TOUCH THUMB & INDEX TO DRAG ]"
             elif ge.neck_hold_progress > 0.0:
@@ -1147,7 +1214,7 @@ class GestureARApp:
 
         # Screen Overflow Disappearance Visual Alert
         if time.perf_counter() - self.last_overflow_time < 2.0:
-            banner = f"⚠️ {self.overflow_msg} ⚠️"
+            banner = f"! OVERFLOW ! {self.overflow_msg} ! OVERFLOW !"
             t_sz = cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)[0]
             ox = max(20, (frame.shape[1] - t_sz[0]) // 2)
             oy = int(frame.shape[0] * 0.42)
@@ -1172,7 +1239,7 @@ class GestureARApp:
             hud_y = 105
             cv2.putText(
                 frame,
-                f"⚡ BRING SHAPES CLOSE (<145px) TO ASSEMBLE! (DISTANCE: {d_px}px)",
+                f">> BRING SHAPES CLOSE (<145px) TO ASSEMBLE! (DISTANCE: {d_px}px) <<",
                 (frame.shape[1] // 2 - 320, hud_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -1229,16 +1296,17 @@ class GestureARApp:
         cv2.circle(frame, (cx, cy), max(2, radius - 32), (255, 255, 255), 2, cv2.LINE_AA)
 
         # 2. Radiating energy particles
-        num_sparks = 18
-        for angle in np.linspace(0, 2 * np.pi, num_sparks)[:-1]:
-            dist_p = radius * 1.12
-            px = int(cx + dist_p * np.cos(angle))
-            py = int(cy + dist_p * np.sin(angle))
-            if 0 <= px < w and 0 <= py < h:
-                cv2.circle(frame, (px, py), 4, (0, 255, 255), -1, cv2.LINE_AA)
+        num_sparks = self.quality_config.max_particles
+        if num_sparks > 0:
+            for angle in np.linspace(0, 2 * np.pi, num_sparks)[:-1]:
+                dist_p = radius * 1.12
+                px = int(cx + dist_p * np.cos(angle))
+                py = int(cy + dist_p * np.sin(angle))
+                if 0 <= px < w and 0 <= py < h:
+                    cv2.circle(frame, (px, py), 4, (0, 255, 255), -1, cv2.LINE_AA)
 
         # 3. Screen flash on initial impact
-        if progress < 0.35:
+        if self.quality_config.enable_shockwave_flash and progress < 0.35:
             alpha_flash = float(0.35 * (1.0 - progress / 0.35))
             flash_overlay = frame.copy()
             flash_overlay[:] = (200, 240, 255)
@@ -1247,7 +1315,7 @@ class GestureARApp:
         # 4. Success text
         cv2.putText(
             frame,
-            "⚡ SNAP FUSION! GUITAR ASSEMBLED SUCCESSFULLY! ⚡",
+            ">> SNAP FUSION! GUITAR ASSEMBLED SUCCESSFULLY! <<",
             (w // 2 - 300, min(h - 80, cy - radius - 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -1274,7 +1342,7 @@ class GestureARApp:
 
         # 2. Animated harmonic waveform points
         now_t = time.perf_counter()
-        num_pts = 24
+        num_pts = getattr(self.quality_config, "oscilloscope_points", 24)
         mid_y = y + h // 2
         pts = []
         for i in range(num_pts):

@@ -14,7 +14,7 @@ Covers:
 - Dual-finger drag interaction for sculpted shapes
 - Magnetic snap fusion (READY_TO_ASSEMBLE -> FUSION_SNAP -> GUITAR_ACTIVE)
 - Fallback 'O' pinch guitar spawn
-- Crossed-hands 'X' geometry detection
+- Runtime UI Exit and Reset touch state machines with clock injection
 """
 
 import time
@@ -64,7 +64,7 @@ def test_initial_state(engine):
 
 
 def test_exit_button_touch_and_hold(engine):
-    """Holding a fingertip inside the top-right exit button triggers should_exit."""
+    """Holding a fingertip inside the top-right exit button triggers should_exit using injected clock."""
     frame_shape = (720, 1280, 3)
     w = 1280
     btn_x = w - 80  # Inside exit button bbox
@@ -72,21 +72,20 @@ def test_exit_button_touch_and_hold(engine):
 
     hand = create_mock_hand("Right", {8: (btn_x, btn_y)})
 
-    # Initial frame touch
-    engine.update([hand], frame_shape)
+    # Initial frame touch at t=10.0
+    engine.update([hand], frame_shape, current_time=10.0)
     assert engine.is_touching_exit is True
     assert engine.should_exit is False
     assert 0.0 <= engine.exit_progress < 1.0
 
-    # Simulate waiting past 3.0s duration
-    engine._exit_start_time = time.perf_counter() - 3.1
-    engine.update([hand], frame_shape)
+    # Advance clock past 3.0s duration (t=13.2)
+    engine.update([hand], frame_shape, current_time=13.2)
     assert engine.exit_progress >= 1.0
     assert engine.should_exit is True
 
 
 def test_reset_button_touch_and_hold(engine):
-    """Holding a fingertip inside the reset button triggers reset_to_idle."""
+    """Holding a fingertip inside the reset button triggers reset_to_idle using injected clock."""
     frame_shape = (720, 1280, 3)
     # Reset button bounds at 1280w: (935, 8) to (1095, 44)
     btn_x = 1000.0
@@ -98,13 +97,12 @@ def test_reset_button_touch_and_hold(engine):
 
     hand = create_mock_hand("Right", {8: (btn_x, btn_y)})
 
-    # Frame 1: touch begins
-    engine.update([hand], frame_shape)
+    # Frame 1: touch begins at t=100.0
+    engine.update([hand], frame_shape, current_time=100.0)
     assert engine.is_touching_reset is True
 
-    # Simulate hold duration (0.7s)
-    engine._reset_start_time = time.perf_counter() - 0.8
-    engine.update([hand], frame_shape)
+    # Advance clock past 0.7s hold duration (t=100.8)
+    engine.update([hand], frame_shape, current_time=100.8)
 
     assert engine.state == AppState.IDLE
     assert engine.reset_just_triggered is True
@@ -292,24 +290,34 @@ def test_rectangle_neck_sculpting_and_fusion(engine):
     assert engine.guitar_zones is not None
 
 
-def test_crossed_hands_exit_gesture(engine):
-    """Hands crossing wrists/fingers in 'X' geometry detected by _check_crossed_hands."""
-    # Hand 1: Wrist at (400, 600), Index at (600, 300) [diagonal /]
-    # Hand 2: Wrist at (600, 600), Index at (400, 300) [diagonal \]
-    h1 = create_mock_hand("Left", {
-        0: (400.0, 600.0),
-        8: (600.0, 300.0),
-        9: (500.0, 450.0),
-        12: (610.0, 310.0),
-    })
-    h2 = create_mock_hand("Right", {
-        0: (600.0, 600.0),
-        8: (400.0, 300.0),
-        9: (500.0, 450.0),
-        12: (390.0, 310.0),
-    })
+def test_runtime_exit_and_reset_flow(engine):
+    """Verifies runtime engine.update responds to Exit button touch and Reset button touch."""
+    frame_shape = (720, 1280, 3)
+    w = 1280
 
-    is_crossed, center = engine._check_crossed_hands([h1, h2])
-    assert is_crossed is True
-    assert 400 < center[0] < 600
-    assert 300 < center[1] < 600
+    # 1. Exit button touch cancels when hand leaves
+    exit_x = w - 80
+    hand_exit = create_mock_hand("Right", {8: (exit_x, 20)})
+    engine.update([hand_exit], frame_shape, current_time=0.0)
+    assert engine.is_touching_exit is True
+    assert engine.should_exit is False
+
+    # Hand moves away: exit progress resets
+    hand_away = create_mock_hand("Right", {8: (400, 400)})
+    engine.update([hand_away], frame_shape, current_time=1.0)
+    assert engine.is_touching_exit is False
+    assert engine.exit_progress == 0.0
+    assert engine.should_exit is False
+
+    # 2. Reset button touch resets state from GUITAR_ACTIVE to IDLE
+    engine.state = AppState.GUITAR_ACTIVE
+    reset_x = 1000.0
+    hand_reset = create_mock_hand("Right", {8: (reset_x, 25)})
+    engine.update([hand_reset], frame_shape, current_time=2.0)
+    assert engine.is_touching_reset is True
+
+    # Complete 0.7s hold
+    engine.update([hand_reset], frame_shape, current_time=2.75)
+    assert engine.state == AppState.IDLE
+    assert engine.reset_just_triggered is True
+

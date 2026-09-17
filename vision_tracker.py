@@ -40,13 +40,30 @@ logger = logging.getLogger("VisionTracker")
 
 @dataclass
 class HandData:
-    """Structured container for tracked hand landmarks and kinematic properties."""
+    """
+    Structured container for tracked hand landmarks and kinematic properties.
+
+    Coordinates & Semantics:
+    - landmarks_norm: (21, 3) float32 array where:
+        x in [0, 1]: Mirrored horizontal image coordinate (1.0 - raw_x).
+        y in [0, 1]: Vertical image coordinate.
+        z in R: Relative depth with the wrist as origin (z ~= 0.0 at wrist, negative is
+                closer to camera, scaled roughly to image width). Note: z does NOT lie in [0, 1].
+    - landmarks_px: (21, 3) float32 array in screen pixel coordinates:
+        x in [0, width], y in [0, height], z in pixels (scaled by frame width).
+    - Invariant: landmarks_px[:, 0] == landmarks_norm[:, 0] * width,
+                 landmarks_px[:, 1] == landmarks_norm[:, 1] * height,
+                 landmarks_px[:, 2] == landmarks_norm[:, 2] * width.
+    - timestamp: float measurement timestamp (exact time the source video frame was captured).
+    - inference_timestamp: float publication timestamp (exact time AI inference completed).
+    """
     handedness: str  # 'Left' or 'Right' (aligned with mirrored display)
-    landmarks_norm: np.ndarray  # (21, 3) float32 in [0, 1] screen coordinates
-    landmarks_px: np.ndarray    # (21, 3) float32 in pixel coordinates
+    landmarks_norm: np.ndarray  # (21, 3) float32
+    landmarks_px: np.ndarray    # (21, 3) float32
     fingertip_velocities: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     wrist_velocity: Tuple[float, float] = (0.0, 0.0)
-    timestamp: float = 0.0
+    timestamp: float = 0.0  # Frame capture / measurement timestamp
+    inference_timestamp: float = 0.0  # Inference completion / publication timestamp
     # Landmark indices for fingertips: 4 (thumb), 8 (index), 12 (middle), 16 (ring), 20 (pinky)
 
 
@@ -514,16 +531,20 @@ class HandTracker:
         if self.mp_hands is not None:
             self._init_mp_hands()
 
-    def process(self, raw_bgr_frame: np.ndarray) -> List[HandData]:
+    def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """
         Processes a raw unmirrored BGR frame, runs MediaPipe, mirrors coordinates,
         swaps handedness, applies active filter, and calculates velocities.
+
+        Args:
+            raw_bgr_frame: Input BGR image array.
+            timestamp: Frame capture timestamp (seconds). If omitted, time.perf_counter() is used.
         """
         if self.hands is None or raw_bgr_frame is None:
             return []
 
         h, w, _ = raw_bgr_frame.shape
-        current_time = time.perf_counter()
+        measurement_time = time.perf_counter() if timestamp is None else float(timestamp)
 
         # Inference resolution scaling: maintain crisp fidelity up to 960px width
         if w > 960:
@@ -543,6 +564,7 @@ class HandTracker:
             return []
         rgb_frame.flags.writeable = True
 
+        infer_completion_time = time.perf_counter()
         tracked_hands: List[HandData] = []
         currently_detected_labels: List[str] = []
 
@@ -564,7 +586,7 @@ class HandTracker:
                 # Tracking Filtering via BaseFilter interface
                 if mirrored_label not in self._filters:
                     self._filters[mirrored_label] = self._create_filter_instance()
-                smoothed_norm = self._filters[mirrored_label].filter(raw_coords, current_time)
+                smoothed_norm = self._filters[mirrored_label].filter(raw_coords, measurement_time)
                 self._smoothed_landmarks[mirrored_label] = smoothed_norm
 
                 # Convert to screen pixel coordinates
@@ -574,9 +596,9 @@ class HandTracker:
                 landmarks_px[:, 2] = smoothed_norm[:, 2] * w  # Depth scaled to width
 
                 # Velocity calculation for fingertips and wrist (pixels/second)
-                dt = current_time - self._prev_timestamps.get(mirrored_label, current_time)
+                dt = measurement_time - self._prev_timestamps.get(mirrored_label, measurement_time)
                 dt = max(0.001, dt)
-                self._prev_timestamps[mirrored_label] = current_time
+                self._prev_timestamps[mirrored_label] = measurement_time
 
                 # Wrist velocity calculation
                 cur_wrist = landmarks_px[0, :2]
@@ -613,7 +635,8 @@ class HandTracker:
                         landmarks_px=landmarks_px,
                         fingertip_velocities=velocities,
                         wrist_velocity=wrist_vel,
-                        timestamp=current_time,
+                        timestamp=measurement_time,
+                        inference_timestamp=infer_completion_time,
                     )
                 )
 
@@ -674,6 +697,11 @@ class AsyncHandTracker:
         self._snapshot_lock = threading.Lock()
         self._latest_hands: List[HandData] = []
         self._latest_timestamp: float = time.perf_counter()
+        self._latest_measurement_ts: float = time.perf_counter()
+        self._latest_publication_ts: float = time.perf_counter()
+        self._latest_infer_start_ts: float = time.perf_counter()
+        self._last_frame_w: int = getattr(camera, "width", 1920)
+        self._last_frame_h: int = getattr(camera, "height", 1080)
         self.is_running: bool = False
         self._thread: Optional[threading.Thread] = None
 
@@ -711,10 +739,10 @@ class AsyncHandTracker:
         with self._config_lock:
             self.tracker.set_model_complexity(complexity)
 
-    def process(self, raw_bgr_frame: np.ndarray) -> List[HandData]:
+    def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """Direct synchronous process fallback."""
         with self._config_lock:
-            return self.tracker.process(raw_bgr_frame)
+            return self.tracker.process(raw_bgr_frame, timestamp=timestamp)
 
     def start(self) -> AsyncHandTracker:
         """Launches the dedicated background AI tracking worker thread."""
@@ -749,13 +777,18 @@ class AsyncHandTracker:
 
             # Heavy inference executed under config lock, completely decoupled from snapshot lock
             with self._config_lock:
-                hands = self.tracker.process(frame)
+                hands = self.tracker.process(frame, timestamp=frame_ts)
             t_after = time.perf_counter()
 
             # Publish result to snapshot lock in microseconds
             with self._snapshot_lock:
                 self._latest_hands = hands
                 self._latest_timestamp = t_after
+                self._latest_measurement_ts = frame_ts
+                self._latest_publication_ts = t_after
+                self._latest_infer_start_ts = t_start
+                if frame is not None:
+                    self._last_frame_h, self._last_frame_w = frame.shape[:2]
 
             # Telemetry tracking
             infer_dur_ms = (t_after - t_start) * 1000.0
@@ -775,8 +808,10 @@ class AsyncHandTracker:
     def get_latest_hands(self, current_time: float, extrapolate: bool = True) -> List[HandData]:
         """
         Retrieves the latest tracked hands with optional Predictive Kinematic Dead-Reckoning.
-        Extrapolates coordinates forward by dt = (current_time - latest_update_time)
-        so hand skeletons glide at 60-120 FPS between AI updates.
+        Extrapolates coordinates forward based on physical measurement age:
+            dt = current_time - measurement_time
+        where measurement_time is the original camera frame capture timestamp.
+        Guarantees landmarks_px and landmarks_norm remain strictly synchronized.
         """
         with self._snapshot_lock:
             hands_copy = [
@@ -787,19 +822,26 @@ class AsyncHandTracker:
                     fingertip_velocities=dict(h.fingertip_velocities),
                     wrist_velocity=h.wrist_velocity,
                     timestamp=h.timestamp,
+                    inference_timestamp=h.inference_timestamp,
                 )
                 for h in self._latest_hands
             ]
-            update_time = self._latest_timestamp
+            measurement_time = self._latest_measurement_ts
+            frame_w = self._last_frame_w
+            frame_h = self._last_frame_h
 
         if not extrapolate or not hands_copy:
             return hands_copy
 
-        dt = float(np.clip(current_time - update_time, 0.0, 0.045))  # max 45ms forward projection
+        # Age is elapsed time since camera visual frame capture, clamped for safety
+        dt = float(np.clip(current_time - measurement_time, 0.0, 0.060))  # max 60ms forward projection
         if dt <= 0.002:
             return hands_copy
 
-        # Kinematic forward projection for ultra-smooth 60-120 FPS rendering
+        inv_w = 1.0 / max(1.0, float(frame_w))
+        inv_h = 1.0 / max(1.0, float(frame_h))
+
+        # Kinematic forward projection for smooth rendering
         for hand in hands_copy:
             vw_x, vw_y = hand.wrist_velocity
             # Extrapolate all landmarks with base wrist movement
@@ -812,6 +854,11 @@ class AsyncHandTracker:
                 if abs(vx) > 5.0 or abs(vy) > 5.0:
                     hand.landmarks_px[tip_idx, 0] += vx * dt * 0.5
                     hand.landmarks_px[tip_idx, 1] += vy * dt * 0.5
+
+            # Synchronize canonical normalized coordinates to maintain exact consistency invariant
+            hand.landmarks_norm[:, 0] = hand.landmarks_px[:, 0] * inv_w
+            hand.landmarks_norm[:, 1] = hand.landmarks_px[:, 1] * inv_h
+            hand.landmarks_norm[:, 2] = hand.landmarks_px[:, 2] * inv_w
 
         return hands_copy
 

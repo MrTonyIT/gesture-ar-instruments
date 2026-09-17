@@ -22,7 +22,7 @@ This research paper documents the engineering design of `gesture-ar-instruments`
 
 ## 2. Kinematic Filter Mathematics & Architectures
 
-Tracking filters inherit from `BaseFilter(ABC)` in `vision_tracker.py`. All filters operate on Normalized Device Coordinates (NDC) $\mathbf{x} = (x, y, z) \in [0, 1]^3$.
+Tracking filters inherit from `BaseFilter(ABC)` in `vision_tracker.py`. Coordinates are normalized such that $x, y \in [0, 1]$ (mirrored horizontal and vertical image axes), while $z \in \mathbb{R}$ represents relative depth from the wrist origin (scaled roughly to image width, negative toward the camera, and not bounded to $[0, 1]$).
 
 ### 2.1 Raw Pass-Through (`RawFilter`)
 Serves as the empirical baseline. Output is identical to input:
@@ -142,8 +142,8 @@ When a strum crosses a string whose voicing fret is `None`:
 ### 4.2 Decoupled Audio Callback & Contention-Free Mixing
 To prevent priority inversions on the PortAudio callback thread:
 1. Active voices are snapshotted under mutex in sub-microsecond time.
-2. Waveform rendering (`voice.render(frames)`) and additive mixing execute **outside the lock**.
-3. Only finished voice removal re-acquires the lock briefly.
+2. Waveform rendering (`voice.render(frames)`) and additive mixing execute **outside the lock**. Piano voices synthesize with a percussive Attack-Decay (AD) exponential envelope, while plucked strings utilize exponential decay.
+3. Only finished voice removal re-acquires the lock briefly. Zero logging or I/O calls occur on the realtime audio thread.
 4. Hardware buffer status flags (`status.output_underflow`, `status.output_overflow`) are recorded into telemetry counters.
 5. Mixed samples pass through `np.tanh` soft-limiting to eliminate digital clipping.
 
@@ -155,7 +155,7 @@ In `instruments.py`, the virtual piano is grounded to the lower desk area ($Y \i
 
 ### 5.1 Downward Velocity Gating
 Resting fingers inside a key rect must not continuously re-trigger notes:
-1. **Debounce lockout:** $\Delta t > 0.09\text{ s}$.
+1. **Debounce lockout:** $\Delta t > 0.120\text{ s}$ ($120\text{ ms}$).
 2. **Hover suppression:** Finger ID `(handedness, tip_id)` must not already be recorded in `_finger_held_keys`.
 3. **Downward velocity threshold:**
    $$v_y \ge 60.0\text{ px/s} \quad \text{and} \quad \frac{v_y}{H} \ge 0.08\text{ s}^{-1}$$

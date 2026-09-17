@@ -77,16 +77,15 @@ def test_velocity_gating_slow_vs_strike(piano, mock_audio):
         tip_positions={8: (strike_x, strike_y)},
         tip_velocities={8: (0.0, 30.0)},
     )
-    piano.update([slow_hand], frame_shape=(720, 1280, 3))
+    piano.update([slow_hand], frame_shape=(720, 1280, 3), current_time=0.0)
     assert len(mock_audio.triggered_notes) == 0
 
     # 2. Fast strike: vy = 350 px/s
-    time.sleep(0.01)
     strike_hand = create_hand(
         tip_positions={8: (strike_x, strike_y)},
         tip_velocities={8: (0.0, 350.0)},
     )
-    piano.update([strike_hand], frame_shape=(720, 1280, 3))
+    piano.update([strike_hand], frame_shape=(720, 1280, 3), current_time=0.02)
     assert len(mock_audio.triggered_notes) == 1
     assert mock_audio.triggered_notes[0][0] == pytest.approx(wkey.freq)
 
@@ -105,7 +104,7 @@ def test_black_key_precedence(piano, mock_audio):
         tip_positions={8: (strike_x, strike_y)},
         tip_velocities={8: (0.0, 300.0)},
     )
-    piano.update([strike_hand], frame_shape=(720, 1280, 3))
+    piano.update([strike_hand], frame_shape=(720, 1280, 3), current_time=0.0)
 
     assert len(mock_audio.triggered_notes) == 1
     assert mock_audio.triggered_notes[0][0] == pytest.approx(bkey.freq)
@@ -129,7 +128,7 @@ def test_multi_finger_polyphony(piano, mock_audio):
         },
     )
 
-    piano.update([hand], frame_shape=(720, 1280, 3))
+    piano.update([hand], frame_shape=(720, 1280, 3), current_time=0.0)
     assert len(mock_audio.triggered_notes) == 2
     played_freqs = sorted([n[0] for n in mock_audio.triggered_notes])
     expected_freqs = sorted([wkey_c.freq, wkey_e.freq])
@@ -144,26 +143,27 @@ def test_hover_suppression(piano, mock_audio):
     wkey = piano.white_keys[0]
     pos = ((wkey.rect[0] + wkey.rect[2]) / 2.0, (wkey.rect[1] + wkey.rect[3]) / 2.0)
 
-    # First strike
+    # First strike at t=0.0
     hand_strike = create_hand(tip_positions={8: pos}, tip_velocities={8: (0.0, 250.0)})
-    piano.update([hand_strike], frame_shape=(720, 1280, 3))
+    piano.update([hand_strike], frame_shape=(720, 1280, 3), current_time=0.0)
     assert len(mock_audio.triggered_notes) == 1
 
     # Finger remains resting inside key for subsequent frames
-    # Even if micro-jitter produces positive velocity, hover suppression must block it
-    time.sleep(piano.DEBOUNCE_SECONDS + 0.01)
+    # Even if micro-jitter produces positive velocity and debounce expires, hover suppression blocks it
+    t_resting = 0.0 + piano.DEBOUNCE_SECONDS + 0.05
     hand_resting = create_hand(tip_positions={8: pos}, tip_velocities={8: (0.0, 150.0)})
-    piano.update([hand_resting], frame_shape=(720, 1280, 3))
+    piano.update([hand_resting], frame_shape=(720, 1280, 3), current_time=t_resting)
 
     assert len(mock_audio.triggered_notes) == 1, "Hover suppression failed: key retriggered while resting"
 
-    # Finger lifts up (vy < -40), then strikes down again
+    # Finger lifts up (vy < -40) at t_lift, then strikes down again after debounce
+    t_lift = t_resting + 0.05
     hand_lift = create_hand(tip_positions={8: pos}, tip_velocities={8: (0.0, -80.0)})
-    piano.update([hand_lift], frame_shape=(720, 1280, 3))
+    piano.update([hand_lift], frame_shape=(720, 1280, 3), current_time=t_lift)
 
-    time.sleep(piano.DEBOUNCE_SECONDS + 0.01)
+    t_restrike = t_lift + piano.DEBOUNCE_SECONDS + 0.05
     hand_restrike = create_hand(tip_positions={8: pos}, tip_velocities={8: (0.0, 250.0)})
-    piano.update([hand_restrike], frame_shape=(720, 1280, 3))
+    piano.update([hand_restrike], frame_shape=(720, 1280, 3), current_time=t_restrike)
 
     assert len(mock_audio.triggered_notes) == 2, "Second strike after deliberate release should trigger"
 
