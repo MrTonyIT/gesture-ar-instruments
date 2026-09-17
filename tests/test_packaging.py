@@ -32,6 +32,8 @@ def test_pyproject_flat_layout_modules_declared():
     ]
     for mod in expected_modules:
         assert f'"{mod}"' in text or f"'{mod}'" in text, f"Module {mod} missing in pyproject.toml py-modules"
+    assert 'packages = ["models"]' in text
+    assert "[tool.setuptools.package-data]" in text
 
 
 def test_pyproject_dependencies():
@@ -77,7 +79,7 @@ def test_dependency_contract_consistency():
 
     expected_pins = [
         "opencv-contrib-python==4.10.0.84",
-        "mediapipe==0.10.14",
+        "mediapipe==0.10.35",
         "numpy==1.26.4",
         "sounddevice==0.5.1",
     ]

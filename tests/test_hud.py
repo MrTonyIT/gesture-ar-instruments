@@ -266,7 +266,7 @@ def test_x11_and_windows_special_keys_no_collision(app):
     assert app.handle_key(0xFF09) == "DIAGNOSTICS"
     assert app.show_diagnostics != init_diag
 
-    # X11 F3 (0xFFBE = 65472)
+    # X11 F3 (0xFFC0 = 65472)
     diag_state = app.show_diagnostics
     assert app.handle_key(65472) == "DIAGNOSTICS"
     assert app.show_diagnostics != diag_state

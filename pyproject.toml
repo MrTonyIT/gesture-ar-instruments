@@ -37,7 +37,7 @@ classifiers = [
 ]
 dependencies = [
     "opencv-contrib-python==4.10.0.84",
-    "mediapipe==0.10.14",
+    "mediapipe==0.10.35",
     "numpy==1.26.4",
     "sounddevice==0.5.1"
 ]
@@ -58,6 +58,10 @@ py-modules = [
     "main",
     "vision_tracker"
 ]
+packages = ["models"]
+
+[tool.setuptools.package-data]
+"models" = ["*.task"]
 
 [project.scripts]
 gesture-ar = "main:main"

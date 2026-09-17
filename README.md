@@ -209,6 +209,13 @@ python -m ruff check .
 
 ---
 
+## 🔒 Privacy & On-Device Computer Vision
+
+- **100% Local Video Inference:** All camera video streams, hand tracking landmark extraction, gesture recognition, and procedural audio synthesis execute entirely on the local host CPU. No video frames, images, audio recordings, or biometric representations are ever uploaded, transmitted across the network, or persisted to disk.
+- **MediaPipe Tasks Telemetry Notice:** The application utilizes the modern Google MediaPipe Tasks framework (`mediapipe>=0.10.30`) with the bundled local model (`models/hand_landmarker.task`). Note that official prebuilt MediaPipe Tasks native binaries incorporate standard framework-level performance and utilization metrics reporting to Google endpoints (see upstream issue google-ai-edge/mediapipe #6291), for which upstream MediaPipe currently provides no documented environment variable or API opt-out flag.
+
+---
+
 ## 📂 Project Structure
 
 ```
@@ -223,6 +230,9 @@ gesture-ar-instruments/
 ├── docs/
 │   ├── RESEARCH.md              # Research paper: filter math & empirical benchmark data
 │   └── USER_STUDY_PROTOCOL.md   # Formal 24-participant usability evaluation methodology
+├── models/
+│   ├── __init__.py              # Models package initializer
+│   └── hand_landmarker.task     # Bundled Google MediaPipe Tasks HandLandmarker model
 ├── tests/
 │   ├── test_async_tracking.py   # Asynchronous timestamping & kinematic extrapolation
 │   ├── test_audio.py            # Synthesis engine, voicings, polyphony caps
@@ -234,6 +244,7 @@ gesture-ar-instruments/
 │   ├── test_packaging.py        # PEP 517 build, entry points, metadata checks
 │   ├── test_piano.py            # Velocity gating, black key precedence, hover suppression
 │   ├── test_quality_profiles.py # Explicit HIGH, BALANCED, LOW profile switching
+│   ├── test_tasks_adapter.py    # MediaPipe Tasks HandLandmarker adapter & real model tests
 │   └── test_ui_geometry.py      # Corner reticle non-duplicate line validation
 ├── audio_engine.py              # Low-latency procedural synth with 32-voice cap & soft limiter
 ├── benchmark_filters.py         # Empirical synthetic trajectory benchmark harness
@@ -241,11 +252,11 @@ gesture-ar-instruments/
 ├── gesture_engine.py            # Spatial state machine, sculpting & touch logic
 ├── instruments.py               # Tabletop Piano & Virtual Guitar physics & hit detection
 ├── main.py                      # Application orchestrator, ThreadedCamera & Diagnostics HUD
-├── vision_tracker.py            # MediaPipe Hands with pluggable BaseFilter hierarchy
+├── vision_tracker.py            # MediaPipe Tasks HandLandmarker with BaseFilter hierarchy
 ├── pyproject.toml               # PEP 517/621 project configuration & tool configs
 ├── constraints.txt              # CI-verified direct dependency constraints for reproduction
 ├── requirements.txt             # Exact pinned core runtime dependencies for release
-├── requirements-dev.txt         # Development & test tooling (pytest, ruff)
+├── requirements-dev.txt         # Development & test tooling (pytest, ruff, pip-audit)
 ├── LICENSE                      # MIT Open Source License
 └── README.md                    # Project documentation
 ```

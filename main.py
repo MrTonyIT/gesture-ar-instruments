@@ -70,9 +70,9 @@ ESCAPE_FULL_KEYS: Tuple[int, ...] = (27, 0xFF1B)
 TAB_FULL_KEYS: Tuple[int, ...] = (9, 0xFF09)
 
 # Legitimate F3 platform-specific raw key codes from OpenCV waitKeyEx
-# Windows: 0x720000; Linux/X11: 0x120000, 7536752, 65472 (0xFFBE)
+# Windows: 0x720000 (VK_F3 << 16); Linux/X11: 65472 (0xFFC0)
 # NOTE: ASCII 114 is deliberately excluded because 114 == ord("r")
-F3_FULL_KEYS: Tuple[int, ...] = (0x720000, 0x120000, 7536752, 65472)
+F3_FULL_KEYS: Tuple[int, ...] = (0x720000, 65472)
 F3_RAW_KEYS: Tuple[int, ...] = F3_FULL_KEYS
 
 # MediaPipe Hand Skeleton connections (Pairs of landmark indices)
@@ -881,7 +881,7 @@ class GestureARApp:
             cv2.putText(frame, btn_text, (bx1 + 8, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.circle(frame, (bx2 - 12, by1 + 12), 4, (0, 255, 255), -1, cv2.LINE_AA)
         else:
-            cv2.putText(frame, "[X] EXIT (3s)", (bx1 + 24, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 180, 220), 1, cv2.LINE_AA)
+            cv2.putText(frame, "[EXIT] HOLD 3s", (bx1 + 18, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 180, 220), 1, cv2.LINE_AA)
 
         # 6. Context-Aware English Instruction Banner (Bottom Dock)
         instruction_map = {
@@ -913,7 +913,7 @@ class GestureARApp:
         )
         cv2.putText(
             frame,
-            "Quick: [L] LOCK | [R] RESET | [M] AI | [K] RIG | [V] QUAL | [F3/TAB] DIAG | [P] CAM | [X] EXIT",
+            "Quick: [L] LOCK | [R] RESET | [M] AI | [K] RIG | [V] QUAL | [F3/TAB] DIAG | [P] CAM | [Q/ESC] EXIT",
             (max(10, w - 575), h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.35,

@@ -21,6 +21,7 @@ Key Features:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -33,8 +34,12 @@ import numpy as np
 
 try:
     import mediapipe as mp
+    from mediapipe.tasks import python as mp_tasks
+    from mediapipe.tasks.python import vision as mp_vision
 except ImportError:
     mp = None
+    mp_tasks = None
+    mp_vision = None
 
 logger = logging.getLogger("VisionTracker")
 
@@ -554,16 +559,16 @@ class OneEuroFilter(BaseFilter):
 
 class HandTracker:
     """
-    MediaPipe Hands Wrapper with Mirrored Coordinates & Pluggable Filtering.
+    MediaPipe Tasks HandLandmarker Wrapper with Mirrored Coordinates & Pluggable Filtering.
 
     Specifications:
-    - max_num_hands=2, min_detection_confidence=0.55, min_tracking_confidence=0.50
-    - Model complexity 0 (Lite) or 1 (Full).
-    - Passes raw RGB to MediaPipe.
+    - Wraps modern Google MediaPipe Tasks HandLandmarker using bundled models/hand_landmarker.task.
+    - Operates in RunningMode.VIDEO (with strictly monotonic millisecond timestamps) or RunningMode.IMAGE.
+    - Model complexity 0 (Lite / Hyper speed, confidence 0.50) or 1 (Full / Ultra precision, confidence 0.65).
     - Flips X coordinate: X_screen = (1.0 - x) * Width.
     - Swaps Handedness label: 'Left' becomes 'Right' and vice versa.
     - Unified BaseFilter hierarchy (OneEuroFilter, DeadbandFilter, EMAFilter, RawFilter).
-    - Computes fingertip velocity (dY/dt) for press threshold gating.
+    - Computes fingertip velocity (dY/dt) for press threshold gating and wrist translation.
     """
 
     FINGERTIP_INDICES = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky
@@ -571,12 +576,13 @@ class HandTracker:
     def __init__(
         self,
         max_num_hands: int = 2,
-        min_detection_confidence: float = 0.55,
-        min_tracking_confidence: float = 0.50,
+        min_detection_confidence: Optional[float] = None,
+        min_tracking_confidence: Optional[float] = None,
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",  # "one_euro", "deadband", "ema", "raw"
         model_complexity: int = 1,      # 1 = Full (Ultra precision), 0 = Lite (Hyper speed)
         init_mediapipe: bool = True,
+        model_path: Optional[str] = None,
     ) -> None:
         self.max_num_hands = max_num_hands
         self.min_detection_confidence = min_detection_confidence
@@ -585,6 +591,7 @@ class HandTracker:
         self.filter_mode = filter_mode
         self.model_complexity = model_complexity
         self.init_mediapipe = init_mediapipe
+        self.model_path = model_path
 
         # Unified filter instances per hand label ('Left', 'Right')
         self._filters: Dict[str, BaseFilter] = {}
@@ -593,36 +600,94 @@ class HandTracker:
         self._prev_fingertip_px: Dict[str, Dict[int, np.ndarray]] = {}
         self._prev_wrist_px: Dict[str, np.ndarray] = {}
 
-        self.mp_hands = None
-        self.hands = None
+        self.landmarker = None
+        self.hands = None  # Reference alias for compatibility with callers/mocks
+        self._last_video_timestamp_ms: int = 0
 
         if not self.init_mediapipe:
-            logger.info("MediaPipe graph initialization skipped (init_mediapipe=False).")
-        elif mp is not None and hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
-            self.mp_hands = mp.solutions.hands
-            self._init_mp_hands()
+            logger.info("MediaPipe landmarker initialization skipped (init_mediapipe=False).")
+        elif mp_vision is not None and mp_tasks is not None:
+            self._init_landmarker()
         else:
             raise RuntimeError(
-                "MediaPipe legacy solutions API (mp.solutions.hands) is unavailable. "
-                "This application requires mediapipe==0.10.14 with legacy graph support. "
+                "MediaPipe Tasks vision API (mediapipe.tasks.python.vision) is unavailable. "
+                "This application requires mediapipe>=0.10.30 with MediaPipe Tasks support. "
                 "Please install the verified release dependencies via: pip install -r requirements.txt -c constraints.txt"
             )
 
-    def _init_mp_hands(self) -> None:
-        """Initializes or reconfigures MediaPipe Hands instance."""
-        if self.hands is not None:
-            try:
-                self.hands.close()
-            except Exception as e:
-                logger.debug("Error closing existing MediaPipe hands instance: %s", e)
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=self.max_num_hands,
-            model_complexity=self.model_complexity,
-            min_detection_confidence=self.min_detection_confidence,
-            min_tracking_confidence=self.min_tracking_confidence,
+    def _resolve_model_path(self) -> str:
+        """Resolves path to hand_landmarker.task model asset."""
+        if self.model_path and os.path.exists(self.model_path):
+            return os.path.abspath(self.model_path)
+
+        env_path = os.environ.get("GESTURE_AR_MODEL_PATH")
+        if env_path and os.path.exists(env_path):
+            return os.path.abspath(env_path)
+
+        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate_pkg = os.path.join(pkg_dir, "models", "hand_landmarker.task")
+        if os.path.exists(candidate_pkg):
+            return candidate_pkg
+
+        cwd_pkg = os.path.join(os.getcwd(), "models", "hand_landmarker.task")
+        if os.path.exists(cwd_pkg):
+            return cwd_pkg
+
+        raise RuntimeError(
+            f"MediaPipe HandLandmarker model asset not found at '{candidate_pkg}'. "
+            "Ensure models/hand_landmarker.task exists or set GESTURE_AR_MODEL_PATH."
         )
-        logger.info("MediaPipe Hands initialized (model_complexity=%d, filter_mode=%s)", self.model_complexity, self.filter_mode)
+
+    def _init_landmarker(self) -> None:
+        """Initializes or reconfigures MediaPipe Tasks HandLandmarker instance."""
+        if self.landmarker is not None:
+            try:
+                self.landmarker.close()
+            except Exception as e:
+                logger.debug("Error closing existing MediaPipe HandLandmarker instance: %s", e)
+            finally:
+                self.landmarker = None
+                self.hands = None
+
+        if mp_vision is None or mp_tasks is None:
+            raise RuntimeError("MediaPipe Tasks vision API is unavailable.")
+
+        model_file = self._resolve_model_path()
+        base_options = mp_tasks.BaseOptions(model_asset_path=model_file)
+
+        # Quality/complexity mapping
+        det_conf = 0.65 if self.model_complexity == 1 else 0.50
+        track_conf = 0.65 if self.model_complexity == 1 else 0.50
+        presence_conf = 0.65 if self.model_complexity == 1 else 0.50
+
+        if self.min_detection_confidence is not None:
+            det_conf = self.min_detection_confidence
+            presence_conf = self.min_detection_confidence
+        if self.min_tracking_confidence is not None:
+            track_conf = self.min_tracking_confidence
+
+        options = mp_vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_hands=self.max_num_hands,
+            min_hand_detection_confidence=det_conf,
+            min_hand_presence_confidence=presence_conf,
+            min_tracking_confidence=track_conf,
+        )
+        self.landmarker = mp_vision.HandLandmarker.create_from_options(options)
+        self.hands = self.landmarker
+        self._last_video_timestamp_ms = 0
+        logger.info(
+            "MediaPipe Tasks HandLandmarker initialized (model_complexity=%d, det_conf=%.2f, filter_mode=%s, model=%s)",
+            self.model_complexity,
+            det_conf,
+            self.filter_mode,
+            os.path.basename(model_file),
+        )
+
+    def _init_mp_hands(self) -> None:
+        """Backward-compatible alias for landmarker initialization."""
+        self._init_landmarker()
 
     def _create_filter_instance(self) -> BaseFilter:
         """Factory creating the appropriate BaseFilter instance for current filter_mode."""
@@ -668,8 +733,8 @@ class HandTracker:
         if complexity not in (0, 1) or complexity == self.model_complexity:
             return False
         self.model_complexity = complexity
-        if getattr(self, "init_mediapipe", True) and self.mp_hands is not None:
-            self._init_mp_hands()
+        if getattr(self, "init_mediapipe", True) and (self.landmarker is not None or self.hands is not None):
+            self._init_landmarker()
         self.reset_temporal_state()
         return True
 
@@ -682,7 +747,8 @@ class HandTracker:
             raw_bgr_frame: Input BGR image array.
             timestamp: Host acquisition timestamp (seconds). If omitted, time.perf_counter() is used.
         """
-        if self.hands is None or raw_bgr_frame is None:
+        active_engine = self.landmarker if self.landmarker is not None else self.hands
+        if active_engine is None or raw_bgr_frame is None:
             return []
 
         h, w, _ = raw_bgr_frame.shape
@@ -698,21 +764,67 @@ class HandTracker:
 
         # MediaPipe expects RGB
         rgb_frame = cv2.cvtColor(infer_bgr, cv2.COLOR_BGR2RGB)
-        rgb_frame.flags.writeable = False
-        try:
-            results = self.hands.process(rgb_frame)
-        except Exception as e:
-            logger.debug("MediaPipe inference error or graph reset: %s", e)
+
+        results = None
+        if hasattr(active_engine, "detect_for_video"):
+            ts_ms = int(round(measurement_time * 1000.0))
+            if ts_ms <= self._last_video_timestamp_ms:
+                ts_ms = self._last_video_timestamp_ms + 1
+            self._last_video_timestamp_ms = ts_ms
+
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            try:
+                results = active_engine.detect_for_video(mp_image, ts_ms)
+            except Exception as e:
+                logger.debug("MediaPipe Tasks detect_for_video error: %s", e)
+                return []
+        elif hasattr(active_engine, "detect"):
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            try:
+                results = active_engine.detect(mp_image)
+            except Exception as e:
+                logger.debug("MediaPipe Tasks detect error: %s", e)
+                return []
+        elif hasattr(active_engine, "process"):
+            # Legacy or test mock interface
+            rgb_frame.flags.writeable = False
+            try:
+                results = active_engine.process(rgb_frame)
+            except Exception as e:
+                logger.debug("MediaPipe process error: %s", e)
+                return []
+            finally:
+                rgb_frame.flags.writeable = True
+        else:
             return []
-        rgb_frame.flags.writeable = True
+
+        if results is None:
+            return []
 
         infer_completion_time = time.perf_counter()
         tracked_hands: List[HandData] = []
         currently_detected_labels: List[str] = []
 
-        if results.multi_hand_landmarks and results.multi_handedness:
-            for hand_landmarks, classification in zip(results.multi_hand_landmarks, results.multi_handedness):
-                raw_label = classification.classification[0].label  # 'Left' or 'Right'
+        # Parse results: supports both modern MediaPipe Tasks and legacy/mock formats
+        raw_hand_landmarks = []
+        raw_handedness = []
+
+        if hasattr(results, "hand_landmarks") and hasattr(results, "handedness"):
+            raw_hand_landmarks = results.hand_landmarks or []
+            raw_handedness = results.handedness or []
+        elif hasattr(results, "multi_hand_landmarks") and hasattr(results, "multi_handedness"):
+            raw_hand_landmarks = results.multi_hand_landmarks or []
+            raw_handedness = results.multi_handedness or []
+
+        if raw_hand_landmarks and raw_handedness:
+            for hand_landmarks, classification in zip(raw_hand_landmarks, raw_handedness):
+                if isinstance(classification, list) and len(classification) > 0:
+                    cat = classification[0]
+                    raw_label = getattr(cat, "category_name", None) or getattr(cat, "label", "Right")
+                elif hasattr(classification, "classification") and len(classification.classification) > 0:
+                    raw_label = classification.classification[0].label
+                else:
+                    raw_label = "Right"
 
                 # Spec: Invert Handedness labels so user's physical left hand corresponds to mirrored screen left
                 mirrored_label = "Right" if raw_label == "Left" else "Left"
@@ -720,7 +832,8 @@ class HandTracker:
 
                 # Extract normalized coordinates with mirrored X: X_screen = (1.0 - x)
                 raw_coords = np.empty((21, 3), dtype=np.float32)
-                for idx, lm in enumerate(hand_landmarks.landmark):
+                lms = getattr(hand_landmarks, "landmark", hand_landmarks)
+                for idx, lm in enumerate(lms):
                     raw_coords[idx, 0] = 1.0 - lm.x  # Mirrored horizontal coordinate
                     raw_coords[idx, 1] = lm.y
                     raw_coords[idx, 2] = lm.z
@@ -794,8 +907,16 @@ class HandTracker:
         return tracked_hands
 
     def close(self) -> None:
-        """Releases MediaPipe Hands pipeline."""
-        if self.hands is not None:
+        """Releases MediaPipe HandLandmarker pipeline."""
+        if self.landmarker is not None:
+            try:
+                self.landmarker.close()
+            except Exception as e:
+                logger.debug("Error closing MediaPipe HandLandmarker: %s", e)
+            finally:
+                self.landmarker = None
+                self.hands = None
+        elif self.hands is not None and hasattr(self.hands, "close"):
             try:
                 self.hands.close()
             except Exception as e:
