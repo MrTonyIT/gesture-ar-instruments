@@ -953,15 +953,34 @@ class HandTracker:
             raw_hand_landmarks = results.multi_hand_landmarks or []
             raw_handedness = results.multi_handedness or []
 
+        candidates = []
         if raw_hand_landmarks and raw_handedness:
-            for hand_landmarks, classification in zip(raw_hand_landmarks, raw_handedness):
+            for candidate_idx, (hand_landmarks, classification) in enumerate(zip(raw_hand_landmarks, raw_handedness)):
                 # 1. Handedness category validation (Requirement 7)
                 raw_label = None
+                raw_score: Optional[float] = None
                 if isinstance(classification, list) and len(classification) > 0:
                     cat = classification[0]
                     raw_label = getattr(cat, "category_name", None) or getattr(cat, "label", None)
+                    s = getattr(cat, "score", None)
+                    if s is not None:
+                        try:
+                            s_val = float(s)
+                            if np.isfinite(s_val):
+                                raw_score = s_val
+                        except (ValueError, TypeError):
+                            raw_score = None
                 elif hasattr(classification, "classification") and len(classification.classification) > 0:
-                    raw_label = getattr(classification.classification[0], "label", None)
+                    cat = classification.classification[0]
+                    raw_label = getattr(cat, "label", None)
+                    s = getattr(cat, "score", None)
+                    if s is not None:
+                        try:
+                            s_val = float(s)
+                            if np.isfinite(s_val):
+                                raw_score = s_val
+                        except (ValueError, TypeError):
+                            raw_score = None
 
                 if not raw_label or raw_label not in ("Left", "Right"):
                     logger.debug("Rejected hand with non-canonical handedness label: %r", raw_label)
@@ -997,64 +1016,116 @@ class HandTracker:
 
                 # Spec: Invert Handedness labels so user's physical left hand corresponds to mirrored screen left
                 mirrored_label = "Right" if raw_label == "Left" else "Left"
-                currently_detected_labels.append(mirrored_label)
 
-                # Tracking Filtering via BaseFilter interface
-                if mirrored_label not in self._filters:
-                    self._filters[mirrored_label] = self._create_filter_instance()
-                smoothed_norm = self._filters[mirrored_label].filter(raw_coords, measurement_time)
-                self._smoothed_landmarks[mirrored_label] = smoothed_norm
+                candidates.append({
+                    "mirrored_label": mirrored_label,
+                    "raw_coords": raw_coords,
+                    "score": raw_score,
+                    "source_order": candidate_idx,
+                })
 
-                # Convert to screen pixel coordinates
-                landmarks_px = np.empty_like(smoothed_norm)
-                landmarks_px[:, 0] = smoothed_norm[:, 0] * w
-                landmarks_px[:, 1] = smoothed_norm[:, 1] * h
-                landmarks_px[:, 2] = smoothed_norm[:, 2] * w  # Depth scaled to width
-
-                # Velocity calculation for fingertips and wrist (pixels/second)
-                dt = measurement_time - self._prev_timestamps.get(mirrored_label, measurement_time)
-                dt = max(0.001, dt)
-                self._prev_timestamps[mirrored_label] = measurement_time
-
-                # Wrist velocity calculation
-                cur_wrist = landmarks_px[0, :2]
-                prev_wrist = self._prev_wrist_px.get(mirrored_label)
+        # Resolve candidates so each canonical application handedness label can update temporal state at most once
+        selected_candidates = []
+        for label in ("Left", "Right"):
+            label_candidates = [c for c in candidates if c["mirrored_label"] == label]
+            if not label_candidates:
+                continue
+            if len(label_candidates) == 1:
+                selected_candidates.append(label_candidates[0])
+            else:
+                # Multiple valid candidates map to the same application handedness label
+                prev_wrist = self._prev_wrist_px.get(label)
                 if prev_wrist is not None:
-                    vw_x = float((cur_wrist[0] - prev_wrist[0]) / dt)
-                    vw_y = float((cur_wrist[1] - prev_wrist[1]) / dt)
-                    wrist_vel = (vw_x, vw_y)
+                    # Choose candidate whose current mirrored wrist position is closest to previous wrist position
+                    def distance_key(c):
+                        cur_wrist = np.array([c["raw_coords"][0, 0] * w, c["raw_coords"][0, 1] * h], dtype=np.float32)
+                        dist = float(np.linalg.norm(cur_wrist - prev_wrist))
+                        return (dist, c["source_order"])
+
+                    best_cand = min(label_candidates, key=distance_key)
                 else:
-                    wrist_vel = (0.0, 0.0)
-                self._prev_wrist_px[mirrored_label] = cur_wrist.copy()
+                    # No previous wrist state: prefer higher MediaPipe handedness classification score
+                    # If scores are unavailable or tied: use deterministic source order
+                    def score_key(c):
+                        score_val = c["score"] if c["score"] is not None else float("-inf")
+                        return (-score_val, c["source_order"])
 
-                velocities: Dict[int, Tuple[float, float]] = {}
-                prev_tips = self._prev_fingertip_px.get(mirrored_label, {})
-                current_tips: Dict[int, np.ndarray] = {}
+                    best_cand = min(label_candidates, key=score_key)
 
-                for tip_idx in self.FINGERTIP_INDICES:
-                    cur_pt = landmarks_px[tip_idx, :2]
-                    current_tips[tip_idx] = cur_pt.copy()
-                    if tip_idx in prev_tips:
-                        delta = cur_pt - prev_tips[tip_idx]
-                        vx = float(delta[0] / dt)
-                        vy = float(delta[1] / dt)
-                        velocities[tip_idx] = (vx, vy)
-                    else:
-                        velocities[tip_idx] = (0.0, 0.0)
+                selected_candidates.append(best_cand)
+                for dropped in label_candidates:
+                    if dropped is not best_cand:
+                        logger.debug(
+                            "Dropped duplicate candidate for application handedness '%s' (selected source order %d, dropped source order %d)",
+                            label,
+                            best_cand["source_order"],
+                            dropped["source_order"],
+                        )
 
-                self._prev_fingertip_px[mirrored_label] = current_tips
+        # Preserve deterministic source order in output stream
+        selected_candidates.sort(key=lambda c: c["source_order"])
 
-                tracked_hands.append(
-                    HandData(
-                        handedness=mirrored_label,
-                        landmarks_norm=smoothed_norm,
-                        landmarks_px=landmarks_px,
-                        fingertip_velocities=velocities,
-                        wrist_velocity=wrist_vel,
-                        timestamp=measurement_time,
-                        inference_timestamp=infer_completion_time,
-                    )
+        for cand in selected_candidates:
+            mirrored_label = cand["mirrored_label"]
+            raw_coords = cand["raw_coords"]
+            currently_detected_labels.append(mirrored_label)
+
+            # Tracking Filtering via BaseFilter interface
+            if mirrored_label not in self._filters:
+                self._filters[mirrored_label] = self._create_filter_instance()
+            smoothed_norm = self._filters[mirrored_label].filter(raw_coords, measurement_time)
+            self._smoothed_landmarks[mirrored_label] = smoothed_norm
+
+            # Convert to screen pixel coordinates
+            landmarks_px = np.empty_like(smoothed_norm)
+            landmarks_px[:, 0] = smoothed_norm[:, 0] * w
+            landmarks_px[:, 1] = smoothed_norm[:, 1] * h
+            landmarks_px[:, 2] = smoothed_norm[:, 2] * w  # Depth scaled to width
+
+            # Velocity calculation for fingertips and wrist (pixels/second)
+            dt = measurement_time - self._prev_timestamps.get(mirrored_label, measurement_time)
+            dt = max(0.001, dt)
+            self._prev_timestamps[mirrored_label] = measurement_time
+
+            # Wrist velocity calculation
+            cur_wrist = landmarks_px[0, :2]
+            prev_wrist = self._prev_wrist_px.get(mirrored_label)
+            if prev_wrist is not None:
+                vw_x = float((cur_wrist[0] - prev_wrist[0]) / dt)
+                vw_y = float((cur_wrist[1] - prev_wrist[1]) / dt)
+                wrist_vel = (vw_x, vw_y)
+            else:
+                wrist_vel = (0.0, 0.0)
+            self._prev_wrist_px[mirrored_label] = cur_wrist.copy()
+
+            velocities: Dict[int, Tuple[float, float]] = {}
+            prev_tips = self._prev_fingertip_px.get(mirrored_label, {})
+            current_tips: Dict[int, np.ndarray] = {}
+
+            for tip_idx in self.FINGERTIP_INDICES:
+                cur_pt = landmarks_px[tip_idx, :2]
+                current_tips[tip_idx] = cur_pt.copy()
+                if tip_idx in prev_tips:
+                    delta = cur_pt - prev_tips[tip_idx]
+                    vx = float(delta[0] / dt)
+                    vy = float(delta[1] / dt)
+                    velocities[tip_idx] = (vx, vy)
+                else:
+                    velocities[tip_idx] = (0.0, 0.0)
+
+            self._prev_fingertip_px[mirrored_label] = current_tips
+
+            tracked_hands.append(
+                HandData(
+                    handedness=mirrored_label,
+                    landmarks_norm=smoothed_norm,
+                    landmarks_px=landmarks_px,
+                    fingertip_velocities=velocities,
+                    wrist_velocity=wrist_vel,
+                    timestamp=measurement_time,
+                    inference_timestamp=infer_completion_time,
                 )
+            )
 
         # Evict stale hands from filter memory if no longer in frame
         for label in list(self._smoothed_landmarks.keys()):
