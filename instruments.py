@@ -49,7 +49,7 @@ def render_guitar_overlay(frame: np.ndarray, sprite: np.ndarray, M: np.ndarray) 
     """
     Warps and blends a 4-channel BGRA guitar sprite onto a 3-channel BGR frame
     using fast vectorized OpenCV warpAffine and alpha blending with strict
-    boundary clipping guards to eliminate any possibility of crashing.
+    boundary clipping guards that guard common clipping-related failures.
     Modifies frame in-place.
     """
     if sprite is None or sprite.shape[2] != 4:

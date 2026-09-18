@@ -582,3 +582,210 @@ def test_two_hand_simultaneous_tracking_independent_state():
     assert "Right" in tracker._filters
     assert "Left" in tracker._filters
     assert tracker._filters["Right"] is not tracker._filters["Left"]
+
+
+def test_hand_landmarker_transactional_reconfiguration(monkeypatch):
+    """
+    Verifies transactional HandLandmarker profile reconfiguration:
+    1. STABLE -> RESPONSIVE successful transition creates exactly one replacement.
+    2. Old landmarker is closed only after replacement creation succeeds.
+    3. Failed replacement creation leaves old landmarker alive and installed.
+    4. Failed transition leaves profile unchanged.
+    5. Failed transition does not clear temporal state.
+    6. Failed AsyncHandTracker transition does not clear _latest_hands.
+    7. Successful transition still clears tracking snapshot and resets first-frame velocity baseline.
+    8. M-key failure cannot silently leave HUD/profile state inconsistent.
+    """
+    from vision_tracker import AsyncHandTracker, HandData
+    from main import GestureARApp
+
+    call_events = []
+
+    class LifecycleMockLandmarker:
+        def __init__(self, name="old"):
+            self.name = name
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            call_events.append(f"closed_{self.name}")
+
+    old_lm = LifecycleMockLandmarker("old_lm")
+    tracker = HandTracker(init_mediapipe=False, tracking_profile="STABLE")
+    tracker.init_mediapipe = True
+    tracker.landmarker = old_lm
+    tracker.hands = old_lm
+
+    # Populate dummy temporal state
+    tracker._filters["Left"] = tracker._create_filter_instance()
+    tracker._prev_timestamps["Left"] = 123.456
+    tracker._prev_wrist_px["Left"] = np.array([50.0, 50.0])
+
+    # Case A: Failed replacement creation
+    def mock_failed_create(profile):
+        call_events.append("attempted_failed_create")
+        raise RuntimeError("Simulated MediaPipe HandLandmarker creation failure")
+
+    monkeypatch.setattr(tracker, "_create_landmarker_for_profile", mock_failed_create)
+
+    # 3. Failed replacement creation leaves old landmarker alive and installed
+    # 4. Failed transition leaves profile unchanged
+    # 5. Failed transition does not clear temporal state
+    assert tracker.set_tracking_profile("RESPONSIVE") is False
+    assert tracker.tracking_profile == "STABLE"
+    assert tracker.landmarker is old_lm
+    assert old_lm.closed is False
+    assert "closed_old_lm" not in call_events
+    assert "Left" in tracker._filters
+    assert tracker._prev_timestamps["Left"] == 123.456
+
+    # 6. Failed AsyncHandTracker transition does not clear _latest_hands
+    class DummyCamera:
+        width = 1280
+        height = 720
+        def read_sequenced(self):
+            return False, None, 0, 0.0
+
+    async_tracker = AsyncHandTracker(camera=DummyCamera(), init_mediapipe=False, tracking_profile="STABLE")
+    async_tracker.tracker.init_mediapipe = True
+    async_tracker.tracker.landmarker = old_lm
+    async_tracker.tracker.hands = old_lm
+    dummy_hand = HandData(
+        handedness="Right",
+        landmarks_norm=np.zeros((21, 3), dtype=np.float32),
+        landmarks_px=np.zeros((21, 3), dtype=np.float32),
+    )
+    async_tracker._latest_hands = [dummy_hand]
+
+    monkeypatch.setattr(async_tracker.tracker, "_create_landmarker_for_profile", mock_failed_create)
+    assert async_tracker.set_tracking_profile("RESPONSIVE") is False
+    assert async_tracker.tracking_profile == "STABLE"
+    assert len(async_tracker._latest_hands) == 1
+    assert async_tracker._latest_hands[0] is dummy_hand
+
+    # 8. M-key failure cannot silently leave HUD/profile state inconsistent
+    app = GestureARApp(start_threads=False, init_mediapipe=False)
+    app.async_tracker.tracker.init_mediapipe = True
+    app.async_tracker.tracker.landmarker = old_lm
+    app.async_tracker.tracker.hands = old_lm
+    app.async_tracker._latest_hands = [dummy_hand]
+    monkeypatch.setattr(app.async_tracker.tracker, "_create_landmarker_for_profile", mock_failed_create)
+
+    action = app.handle_key(ord("m"))
+    assert action == "TRACKING_PROFILE_FAILED"
+    assert app.async_tracker.tracking_profile == "STABLE"
+    assert len(app.async_tracker._latest_hands) == 1
+
+    # Case B: Successful transition
+    # 1. STABLE -> RESPONSIVE successful transition creates exactly one replacement
+    # 2. Old landmarker is closed only after replacement creation succeeds
+    # 7. Successful transition still clears tracking snapshot and resets first-frame velocity baseline
+    call_events.clear()
+    new_lm = LifecycleMockLandmarker("new_lm")
+
+    def mock_success_create(profile):
+        call_events.append("created_new_lm")
+        return new_lm, None
+
+    monkeypatch.setattr(app.async_tracker.tracker, "_create_landmarker_for_profile", mock_success_create)
+    initial_count = app.async_tracker.tracker.landmarker_creation_count
+
+    action_success = app.handle_key(ord("m"))
+    assert action_success == "TRACKING_PROFILE"
+    assert app.async_tracker.tracker.landmarker_creation_count == initial_count + 1
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
+    assert app.async_tracker.tracker.landmarker is new_lm
+    assert old_lm.closed is True
+    # Verify order: created new first, then closed old
+    assert call_events == ["created_new_lm", "closed_old_lm"]
+    # Verify snapshot cleared and temporal state reset
+    assert len(app.async_tracker._latest_hands) == 0
+    assert len(app.async_tracker.tracker._filters) == 0
+    assert len(app.async_tracker.tracker._prev_timestamps) == 0
+
+
+def test_non_finite_landmarks_rejection():
+    """
+    Verifies rejection of non-finite landmark coordinates (NaN, +Inf, -Inf):
+    - finite 21-point hand accepted;
+    - one NaN x rejected;
+    - one Inf y rejected;
+    - one -Inf z rejected;
+    - malformed detection does not create _filters;
+    - malformed detection does not create _prev_timestamps;
+    - subsequent valid hand starts with zero velocity baseline.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # 1. Finite 21-point hand accepted
+    lms_valid = [MockNormalizedLandmark(x=0.5, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_valid],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_valid = tracker.process(frame, timestamp=1.0)
+    assert len(res_valid) == 1
+    assert "Right" in tracker._filters
+    assert "Right" in tracker._prev_timestamps
+    assert res_valid[0].wrist_velocity == (0.0, 0.0)
+
+    # Clear state for negative tests
+    tracker.reset_temporal_state()
+    assert len(tracker._filters) == 0
+    assert len(tracker._prev_timestamps) == 0
+
+    # 2. One NaN x rejected
+    lms_nan = [MockNormalizedLandmark(x=0.5, y=0.5, z=0.0) for _ in range(21)]
+    lms_nan[4] = MockNormalizedLandmark(x=float("nan"), y=0.5, z=0.0)
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_nan],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_nan = tracker.process(frame, timestamp=1.1)
+    assert len(res_nan) == 0
+    assert len(tracker._filters) == 0
+    assert len(tracker._prev_timestamps) == 0
+
+    # 3. One Inf y rejected
+    lms_inf = [MockNormalizedLandmark(x=0.5, y=0.5, z=0.0) for _ in range(21)]
+    lms_inf[8] = MockNormalizedLandmark(x=0.5, y=float("inf"), z=0.0)
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_inf],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_inf = tracker.process(frame, timestamp=1.2)
+    assert len(res_inf) == 0
+    assert len(tracker._filters) == 0
+    assert len(tracker._prev_timestamps) == 0
+
+    # 4. One -Inf z rejected
+    lms_neginf = [MockNormalizedLandmark(x=0.5, y=0.5, z=0.0) for _ in range(21)]
+    lms_neginf[0] = MockNormalizedLandmark(x=0.5, y=0.5, z=float("-inf"))
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_neginf],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_neginf = tracker.process(frame, timestamp=1.3)
+    assert len(res_neginf) == 0
+    assert len(tracker._filters) == 0
+    assert len(tracker._prev_timestamps) == 0
+
+    # 5. Subsequent valid hand starts with zero velocity baseline
+    lms_subsequent = [MockNormalizedLandmark(x=0.4, y=0.6, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_subsequent],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_subsequent = tracker.process(frame, timestamp=1.4)
+    assert len(res_subsequent) == 1
+    assert res_subsequent[0].wrist_velocity == (0.0, 0.0)
+    for tip_idx, vel in res_subsequent[0].fingertip_velocities.items():
+        assert vel == (0.0, 0.0)
+    assert "Right" in tracker._filters
+    assert "Right" in tracker._prev_timestamps

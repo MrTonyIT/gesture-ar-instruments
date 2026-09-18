@@ -232,7 +232,7 @@ python -m ruff check .
 ## 🔒 Privacy & On-Device Computer Vision
 
 - **100% Local Video Inference:** All camera video streams, hand tracking landmark extraction, gesture recognition, and procedural audio synthesis execute entirely on the local host CPU. No video frames, images, audio recordings, or biometric representations are ever uploaded, transmitted across the network, or persisted to disk.
-- **MediaPipe Tasks Telemetry Notice:** The application utilizes the modern Google MediaPipe Tasks framework (`mediapipe>=0.10.30`) with the bundled local model (`models/hand_landmarker.task`). Note that official prebuilt MediaPipe Tasks native binaries incorporate standard framework-level performance and utilization metrics reporting to Google endpoints (see upstream issue google-ai-edge/mediapipe #6291), for which upstream MediaPipe currently provides no documented environment variable or API opt-out flag.
+- **MediaPipe Tasks Telemetry Notice:** The application utilizes the modern Google MediaPipe Tasks framework (`mediapipe==0.10.35`) with the bundled local model (`models/hand_landmarker.task`). Note that official prebuilt MediaPipe Tasks native binaries incorporate standard framework-level performance and utilization metrics reporting to Google endpoints (see upstream issue google-ai-edge/mediapipe #6291), for which upstream MediaPipe currently provides no documented environment variable or API opt-out flag.
 
 ---
 

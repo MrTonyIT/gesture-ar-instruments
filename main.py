@@ -290,9 +290,13 @@ class GestureARApp:
             changed = self.async_tracker.set_tracking_profile(new_profile)
             if changed:
                 self._on_tracking_pipeline_changed()
-            mode_lbl = "STABLE (Stricter 0.65 Confidence)" if new_profile == "STABLE" else "RESPONSIVE (Permissive 0.50 Confidence)"
-            logger.info("AI tracking profile switched to: %s", mode_lbl)
-            return "TRACKING_PROFILE"
+                actual_profile = getattr(self.async_tracker, "tracking_profile", new_profile)
+                mode_lbl = "STABLE (Stricter 0.65 Confidence)" if actual_profile == "STABLE" else "RESPONSIVE (Permissive 0.50 Confidence)"
+                logger.info("AI tracking profile switched to: %s", mode_lbl)
+                return "TRACKING_PROFILE"
+            else:
+                logger.warning("AI tracking profile switch to %s rejected or failed; active profile remains %s", new_profile, current_profile)
+                return "TRACKING_PROFILE_FAILED"
 
         # 7. Hand Tracking Filter Mode Cycle (k/K)
         if key in FILTER_CYCLE_KEYS:

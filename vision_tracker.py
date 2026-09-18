@@ -5,7 +5,7 @@ High-Performance Threaded Computer Vision and Hand Tracking Module.
 
 Key Features:
 - ThreadedCamera: Dedicated background worker thread continuously capturing frames
-  from cv2.VideoCapture at maximum FPS to eliminate I/O blocking.
+  from cv2.VideoCapture at maximum FPS which decouples camera I/O from rendering.
 - HandTracker:
   * Wraps Google MediaPipe Tasks HandLandmarker with configurable tracking profiles
     (STABLE: 0.65 confidence thresholds, RESPONSIVE: 0.50 confidence thresholds).
@@ -15,7 +15,7 @@ Key Features:
   * Pluggable BaseFilter smoothing (OneEuroFilter default, DeadbandFilter, EMAFilter, RawFilter).
   * Instantaneous fingertip velocity tracking (dY/dt) for piano key press velocity gating.
 - AsyncHandTracker:
-  * Decouples AI inference from UI render loop with independent snapshot lock to eliminate contention.
+  * Decouples AI inference from UI render loop with independent snapshot lock which minimizes snapshot-lock contention.
   * Predictive kinematic dead-reckoning extrapolation targeting 60 FPS display.
 """
 
@@ -203,56 +203,71 @@ class ThreadedCamera:
         self._thread.start()
         return self
 
+    def _release_cap_safe(self) -> None:
+        """Safely releases VideoCapture hardware resource exactly once under cap_io_lock."""
+        with self._cap_io_lock:
+            if not self._released and self.cap is not None:
+                self._released = True
+                try:
+                    self.cap.release()
+                except Exception as e:
+                    logger.debug("Error releasing VideoCapture: %s", e)
+                finally:
+                    self.cap = None
+
     def _capture_loop(self) -> None:
         """Background thread target continuously grabbing fresh frames with zero hardware backlog."""
-        while self.is_running:
-            if not self.is_simulation and self.cap is not None and self.cap.isOpened():
-                if self._settings_requested.is_set():
-                    time.sleep(0.005)
-                    continue
+        try:
+            while self.is_running:
+                if not self.is_simulation and self.cap is not None and self.cap.isOpened():
+                    if self._settings_requested.is_set():
+                        time.sleep(0.005)
+                        continue
 
-                t0 = time.perf_counter()
-                with self._cap_io_lock:
-                    grabbed = self.cap.grab()
+                    t0 = time.perf_counter()
+                    with self._cap_io_lock:
+                        grabbed = self.cap.grab()
+                        if grabbed:
+                            ret, frame = self.cap.retrieve()
+                        else:
+                            ret, frame = False, None
+                    t1 = time.perf_counter()
                     if grabbed:
-                        ret, frame = self.cap.retrieve()
-                    else:
-                        ret, frame = False, None
-                t1 = time.perf_counter()
-                if grabbed:
-                    self.hw_capture_latency_ms = 0.90 * self.hw_capture_latency_ms + 0.10 * ((t1 - t0) * 1000.0)
-                    if ret and frame is not None:
-                        now = time.perf_counter()
-                        self._frame_count += 1
-                        elapsed = now - self._last_fps_calc
-                        if elapsed >= 0.5:
-                            self.camera_fps = self._frame_count / elapsed
-                            self._frame_count = 0
-                            self._last_fps_calc = now
+                        self.hw_capture_latency_ms = 0.90 * self.hw_capture_latency_ms + 0.10 * ((t1 - t0) * 1000.0)
+                        if ret and frame is not None:
+                            now = time.perf_counter()
+                            self._frame_count += 1
+                            elapsed = now - self._last_fps_calc
+                            if elapsed >= 0.5:
+                                self.camera_fps = self._frame_count / elapsed
+                                self._frame_count = 0
+                                self._last_fps_calc = now
 
-                        self.frame_id += 1
-                        self.frame_timestamp = now
-                        with self._lock:
-                            self.ret = ret
-                            self.frame = frame
-                            self._current_frame_id = self.frame_id
-                            self._current_timestamp = now
+                            self.frame_id += 1
+                            self.frame_timestamp = now
+                            with self._lock:
+                                self.ret = ret
+                                self.frame = frame
+                                self._current_frame_id = self.frame_id
+                                self._current_timestamp = now
+                        else:
+                            time.sleep(0.001)
                     else:
                         time.sleep(0.001)
                 else:
-                    time.sleep(0.001)
-            else:
-                # Simulation mode frame generation targeting ~60 FPS
-                time.sleep(0.016)
-                sim_frame = self._generate_simulation_frame()
-                now = time.perf_counter()
-                self.frame_id += 1
-                self.frame_timestamp = now
-                with self._lock:
-                    self.ret = True
-                    self.frame = sim_frame
-                    self._current_frame_id = self.frame_id
-                    self._current_timestamp = now
+                    # Simulation mode frame generation targeting ~60 FPS
+                    time.sleep(0.016)
+                    sim_frame = self._generate_simulation_frame()
+                    now = time.perf_counter()
+                    self.frame_id += 1
+                    self.frame_timestamp = now
+                    with self._lock:
+                        self.ret = True
+                        self.frame = sim_frame
+                        self._current_frame_id = self.frame_id
+                        self._current_timestamp = now
+        finally:
+            self._release_cap_safe()
 
     def _generate_simulation_frame(self) -> np.ndarray:
         """Generates a cyber-grid synthetic frame when no hardware camera is present."""
@@ -356,22 +371,21 @@ class ThreadedCamera:
         if self._thread is not None and self._thread.is_alive():
             logger.warning(
                 "ThreadedCamera worker did not terminate within timeout (%ss); "
-                "skipping VideoCapture.release() to prevent concurrent access race.",
+                "skipping immediate VideoCapture.release() to prevent concurrent access race.",
                 timeout,
             )
             return
 
-        if self.cap is not None:
-            if not self._released:
-                self._released = True
-                try:
-                    with self._cap_io_lock:
-                        self.cap.release()
-                except Exception as e:
-                    logger.debug("Error releasing VideoCapture: %s", e)
-                finally:
-                    self.cap = None
+        self._release_cap_safe()
         logger.info("ThreadedCamera stopped.")
+
+    def release(self) -> None:
+        """Idempotent alias for stop()."""
+        self.stop()
+
+    def close(self) -> None:
+        """Idempotent alias for stop()."""
+        self.stop()
 
 
 # =============================================================================
@@ -491,7 +505,7 @@ ZeroLagDeadbandFilter = DeadbandFilter
 
 class OneEuroFilter(BaseFilter):
     """
-    1€ Filter: Adaptive Low-Pass Filter for Human Motion & AR Rig Jitter Elimination.
+    1€ Filter: Adaptive Low-Pass Filter for Human Motion & AR Rig Jitter Attenuation.
     Reference: Casiez, Roussel, Vogel (CHI 2012).
 
     Parameters:
@@ -636,7 +650,7 @@ class HandTracker:
         else:
             raise RuntimeError(
                 "MediaPipe Tasks vision API (mediapipe.tasks.python.vision) is unavailable. "
-                "This application requires mediapipe>=0.10.30 with MediaPipe Tasks support. "
+                "This application requires mediapipe==0.10.35 with MediaPipe Tasks support. "
                 "Please install the verified release dependencies via: pip install -r requirements.txt -c constraints.txt"
             )
 
@@ -674,19 +688,18 @@ class HandTracker:
             "Ensure models/hand_landmarker.task exists or set GESTURE_AR_MODEL_PATH."
         )
 
-    def _init_landmarker(self) -> None:
-        """Initializes or reconfigures MediaPipe Tasks HandLandmarker instance."""
-        if self.landmarker is not None:
-            try:
-                self.landmarker.close()
-            except Exception as e:
-                logger.debug("Error closing existing MediaPipe HandLandmarker instance: %s", e)
-            finally:
-                self.landmarker = None
-                self.hands = None
-
+    def _create_landmarker_for_profile(self, profile: str) -> Tuple[Any, Any]:
+        """
+        Builds HandLandmarkerOptions and creates a new HandLandmarker instance for the given profile.
+        Returns (landmarker_instance, options).
+        Raises an exception if creation fails without altering any HandTracker state.
+        """
         if mp_vision is None or mp_tasks is None:
-            raise RuntimeError("MediaPipe Tasks vision API is unavailable.")
+            raise RuntimeError(
+                "MediaPipe Tasks vision API (mediapipe.tasks.python.vision) is unavailable. "
+                "This application requires mediapipe==0.10.35 with MediaPipe Tasks support. "
+                "Please install the verified release dependencies via: pip install -r requirements.txt -c constraints.txt"
+            )
 
         model_file = self._resolve_model_path()
         with open(model_file, "rb") as f:
@@ -697,7 +710,7 @@ class HandTracker:
             delegate=mp_tasks.BaseOptions.Delegate.CPU,
         )
 
-        conf_settings = TRACKING_PROFILES.get(self.tracking_profile, TRACKING_PROFILES["STABLE"])
+        conf_settings = TRACKING_PROFILES.get(profile, TRACKING_PROFILES["STABLE"])
         det_conf = conf_settings["detection_confidence"]
         presence_conf = conf_settings["presence_confidence"]
         track_conf = conf_settings["tracking_confidence"]
@@ -716,18 +729,40 @@ class HandTracker:
             min_hand_presence_confidence=presence_conf,
             min_tracking_confidence=track_conf,
         )
-        self.last_landmarker_options = options
-        self.landmarker = mp_vision.HandLandmarker.create_from_options(options)
-        self.landmarker_creation_count += 1
+        landmarker = mp_vision.HandLandmarker.create_from_options(options)
+        return landmarker, options
+
+    def _init_landmarker(self) -> None:
+        """Initializes or reconfigures MediaPipe Tasks HandLandmarker instance."""
+        new_landmarker, options = self._create_landmarker_for_profile(self.tracking_profile)
+        old_landmarker = self.landmarker
+
+        self.landmarker = new_landmarker
         self.hands = self.landmarker
+        self.last_landmarker_options = options
+        self.landmarker_creation_count += 1
         self._last_video_timestamp_ms = 0
+
+        if old_landmarker is not None:
+            try:
+                old_landmarker.close()
+            except Exception as e:
+                logger.debug("Error closing superseded MediaPipe HandLandmarker instance: %s", e)
+
+        conf_settings = TRACKING_PROFILES.get(self.tracking_profile, TRACKING_PROFILES["STABLE"])
+        det_conf = conf_settings["detection_confidence"]
+        track_conf = conf_settings["tracking_confidence"]
+        if self.min_detection_confidence is not None:
+            det_conf = self.min_detection_confidence
+        if self.min_tracking_confidence is not None:
+            track_conf = self.min_tracking_confidence
+
         logger.info(
-            "MediaPipe Tasks HandLandmarker initialized (profile=%s, det_conf=%.2f, track_conf=%.2f, filter_mode=%s, model=%s)",
+            "MediaPipe Tasks HandLandmarker initialized (profile=%s, det_conf=%.2f, track_conf=%.2f, filter_mode=%s)",
             self.tracking_profile,
             det_conf,
             track_conf,
             self.filter_mode,
-            os.path.basename(model_file),
         )
 
     def _init_mp_hands(self) -> None:
@@ -772,18 +807,55 @@ class HandTracker:
 
     def set_tracking_profile(self, profile: str) -> bool:
         """
-        Dynamically switches tracking profile ("STABLE" or "RESPONSIVE").
+        Dynamically and transactionally switches tracking profile ("STABLE" or "RESPONSIVE").
         STABLE uses stricter confidence thresholds (0.65).
         RESPONSIVE uses more permissive confidence thresholds (0.50).
-        Returns True if the profile actually changed, False if it was a no-op.
+
+        Transactional safety:
+        If replacement landmarker creation fails, existing landmarker, profile, and
+        temporal state are fully preserved, reporting failure clearly and returning False.
+        Only after successful replacement creation is the new landmarker atomically installed,
+        profile updated, temporal state reset, and the old landmarker closed.
+
+        Returns True if the profile actually changed, False if it was a no-op or failed.
         """
         norm_profile = str(profile).strip().upper()
         if norm_profile not in TRACKING_PROFILES or norm_profile == self.tracking_profile:
             return False
-        self.tracking_profile = norm_profile
+
+        old_landmarker = self.landmarker
         if getattr(self, "init_mediapipe", True) and (self.landmarker is not None or self.hands is not None):
-            self._init_landmarker()
-        self.reset_temporal_state()
+            try:
+                new_landmarker, options = self._create_landmarker_for_profile(norm_profile)
+            except Exception as e:
+                logger.error(
+                    "Failed to create replacement MediaPipe HandLandmarker for profile '%s': %s. "
+                    "Preserving active profile '%s' and intact tracking state.",
+                    norm_profile,
+                    e,
+                    self.tracking_profile,
+                )
+                return False
+
+            # Atomically install new landmarker
+            self.landmarker = new_landmarker
+            self.hands = new_landmarker
+            self.last_landmarker_options = options
+            self.landmarker_creation_count += 1
+            self._last_video_timestamp_ms = 0
+            self.tracking_profile = norm_profile
+            self.reset_temporal_state()
+
+            # Safely close superseded landmarker only after successful installation
+            if old_landmarker is not None:
+                try:
+                    old_landmarker.close()
+                except Exception as e:
+                    logger.debug("Error closing superseded MediaPipe HandLandmarker: %s", e)
+        else:
+            self.tracking_profile = norm_profile
+            self.reset_temporal_state()
+
         logger.info("HandTracker tracking profile switched to: %s", norm_profile)
         return True
 
@@ -907,16 +979,25 @@ class HandTracker:
                     logger.warning("Rejected malformed hand: expected 21 landmarks, received %d", lm_count)
                     continue
 
+                # 3. Extract normalized coordinates with mirrored X: X_screen = (1.0 - x)
+                raw_coords = np.zeros((21, 3), dtype=np.float32)
+                try:
+                    for idx, lm in enumerate(lms):
+                        raw_coords[idx, 0] = 1.0 - float(lm.x)  # Mirrored horizontal coordinate
+                        raw_coords[idx, 1] = float(lm.y)
+                        raw_coords[idx, 2] = float(lm.z)
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.warning("Rejected malformed hand: landmark coordinate extraction failed: %s", e)
+                    continue
+
+                # 4. Finiteness validation: reject non-finite coordinates (NaN, +Inf, -Inf)
+                if not np.all(np.isfinite(raw_coords)):
+                    logger.warning("Rejected malformed hand with non-finite coordinates (NaN/Inf)")
+                    continue
+
                 # Spec: Invert Handedness labels so user's physical left hand corresponds to mirrored screen left
                 mirrored_label = "Right" if raw_label == "Left" else "Left"
                 currently_detected_labels.append(mirrored_label)
-
-                # Extract normalized coordinates with mirrored X: X_screen = (1.0 - x)
-                raw_coords = np.empty((21, 3), dtype=np.float32)
-                for idx, lm in enumerate(lms):
-                    raw_coords[idx, 0] = 1.0 - lm.x  # Mirrored horizontal coordinate
-                    raw_coords[idx, 1] = lm.y
-                    raw_coords[idx, 2] = lm.z
 
                 # Tracking Filtering via BaseFilter interface
                 if mirrored_label not in self._filters:
@@ -1148,53 +1229,66 @@ class AsyncHandTracker:
         logger.info("AsyncHandTracker worker thread started successfully.")
         return self
 
+    def _close_tracker_safe(self) -> None:
+        """Safely closes HandTracker exactly once under config_lock."""
+        with self._config_lock:
+            if not self._closed:
+                self._closed = True
+                try:
+                    self.tracker.close()
+                except Exception as e:
+                    logger.debug("Error closing tracker: %s", e)
+
     def _tracking_loop(self) -> None:
         """Dedicated worker loop continuously pulling latest camera frame and computing landmarks."""
-        last_processed_frame_id: int = -1
-        while self.is_running:
-            ret, frame, frame_id, frame_ts = self.camera.read_sequenced()
-            if not ret or frame is None:
-                time.sleep(0.002)
-                continue
+        try:
+            last_processed_frame_id: int = -1
+            while self.is_running:
+                ret, frame, frame_id, frame_ts = self.camera.read_sequenced()
+                if not ret or frame is None:
+                    time.sleep(0.002)
+                    continue
 
-            # Stale frame skipping: avoid re-running MediaPipe on the identical camera frame
-            if frame_id == last_processed_frame_id:
-                self.stale_frames_skipped += 1
+                # Stale frame skipping: avoid re-running MediaPipe on the identical camera frame
+                if frame_id == last_processed_frame_id:
+                    self.stale_frames_skipped += 1
+                    time.sleep(0.001)
+                    continue
+
+                last_processed_frame_id = frame_id
+                t_start = time.perf_counter()
+
+                # Heavy inference executed under config lock, completely decoupled from snapshot lock
+                with self._config_lock:
+                    hands = self.tracker.process(frame, timestamp=frame_ts)
+                t_after = time.perf_counter()
+
+                # Publishes the result under a short snapshot lock
+                with self._snapshot_lock:
+                    self._latest_hands = hands
+                    self._latest_timestamp = t_after
+                    self._latest_measurement_ts = frame_ts
+                    self._latest_publication_ts = t_after
+                    self._latest_infer_start_ts = t_start
+                    if frame is not None:
+                        self._last_frame_h, self._last_frame_w = frame.shape[:2]
+
+                # Telemetry tracking
+                infer_dur_ms = (t_after - t_start) * 1000.0
+                self.inference_latency_ms = 0.85 * self.inference_latency_ms + 0.15 * infer_dur_ms
+
+                # Measure AI inference FPS
+                self._ai_frame_count += 1
+                dt_fps = t_after - self._last_fps_time
+                if dt_fps >= 0.5:
+                    self.ai_fps = self._ai_frame_count / dt_fps
+                    self._ai_frame_count = 0
+                    self._last_fps_time = t_after
+
+                # Yield briefly
                 time.sleep(0.001)
-                continue
-
-            last_processed_frame_id = frame_id
-            t_start = time.perf_counter()
-
-            # Heavy inference executed under config lock, completely decoupled from snapshot lock
-            with self._config_lock:
-                hands = self.tracker.process(frame, timestamp=frame_ts)
-            t_after = time.perf_counter()
-
-            # Publishes the result under a short snapshot lock
-            with self._snapshot_lock:
-                self._latest_hands = hands
-                self._latest_timestamp = t_after
-                self._latest_measurement_ts = frame_ts
-                self._latest_publication_ts = t_after
-                self._latest_infer_start_ts = t_start
-                if frame is not None:
-                    self._last_frame_h, self._last_frame_w = frame.shape[:2]
-
-            # Telemetry tracking
-            infer_dur_ms = (t_after - t_start) * 1000.0
-            self.inference_latency_ms = 0.85 * self.inference_latency_ms + 0.15 * infer_dur_ms
-
-            # Measure AI inference FPS
-            self._ai_frame_count += 1
-            dt_fps = t_after - self._last_fps_time
-            if dt_fps >= 0.5:
-                self.ai_fps = self._ai_frame_count / dt_fps
-                self._ai_frame_count = 0
-                self._last_fps_time = t_after
-
-            # Yield briefly
-            time.sleep(0.001)
+        finally:
+            self._close_tracker_safe()
 
     def get_latest_hands(self, current_time: float, extrapolate: bool = True) -> List[HandData]:
         """
@@ -1264,16 +1358,14 @@ class AsyncHandTracker:
         if self._thread is not None and self._thread.is_alive():
             logger.warning(
                 "AsyncHandTracker worker did not terminate within timeout (%ss); "
-                "skipping tracker.close() to prevent concurrent access race.",
+                "skipping immediate tracker.close() to prevent concurrent access race.",
                 timeout,
             )
             return
 
-        if not self._closed:
-            self._closed = True
-            with self._config_lock:
-                self.tracker.close()
+        self._close_tracker_safe()
         logger.info("AsyncHandTracker stopped.")
 
     def close(self) -> None:
+        """Idempotent alias for stop()."""
         self.stop()

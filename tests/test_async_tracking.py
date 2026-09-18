@@ -8,10 +8,13 @@ Unit tests for asynchronous hand tracking timestamp semantics:
 - Strict coordinate consistency invariant between landmarks_px and landmarks_norm
 """
 
+import threading
+import time
+
 import numpy as np
 import pytest
 
-from vision_tracker import AsyncHandTracker, HandData
+from vision_tracker import AsyncHandTracker, HandData, ThreadedCamera
 
 
 class DummyCamera:
@@ -925,5 +928,142 @@ def test_noop_config_set_preserves_snapshot_and_state():
     app.handle_key(ord("m"))
     assert app.async_tracker.tracking_profile == "RESPONSIVE"
     assert len(app.async_tracker._latest_hands) == 0, "M key tracking profile switch failed to clear tracking snapshot!"
+
+
+def test_threaded_camera_deferred_cleanup_after_shutdown_timeout():
+    """
+    Verifies deferred VideoCapture cleanup when stop(timeout) times out:
+    1. worker is intentionally blocked;
+    2. stop(short_timeout) returns while worker remains blocked;
+    3. resource has NOT been released concurrently;
+    4. test releases worker operation;
+    5. worker exits;
+    6. resource is eventually released exactly once;
+    7. calling stop(), release(), or close() again remains idempotent.
+    """
+    class BlockableVideoCapture:
+        def __init__(self):
+            self.opened = True
+            self.release_count = 0
+            self.grab_entered = threading.Event()
+            self.unblock_grab = threading.Event()
+
+        def isOpened(self):
+            return self.opened
+
+        def grab(self):
+            self.grab_entered.set()
+            self.unblock_grab.wait(timeout=5.0)
+            return False
+
+        def retrieve(self):
+            return False, None
+
+        def release(self):
+            self.release_count += 1
+            self.opened = False
+
+        def set(self, prop, val):
+            return True
+
+        def read(self):
+            return True, np.zeros((100, 100, 3), dtype=np.uint8)
+
+    cap = BlockableVideoCapture()
+    cam = ThreadedCamera(cap=cap)
+    cam.start()
+
+    # 1. Wait until worker is inside grab() and intentionally blocked
+    assert cap.grab_entered.wait(timeout=2.0) is True
+
+    # 2. stop(short_timeout) returns boundedly while worker remains blocked
+    cam.stop(timeout=0.01)
+    assert cam._thread is not None and cam._thread.is_alive() is True
+
+    # 3. Resource has NOT been released concurrently
+    assert cap.release_count == 0
+
+    # 4. Test releases worker operation
+    cap.unblock_grab.set()
+
+    # 5. Worker exits
+    cam._thread.join(timeout=2.0)
+    assert cam._thread.is_alive() is False
+
+    # 6. Resource is eventually released exactly once
+    assert cap.release_count == 1
+
+    # 7. Calling stop(), release(), or close() again remains idempotent
+    cam.stop()
+    cam.release()
+    cam.close()
+    assert cap.release_count == 1
+
+
+def test_async_hand_tracker_deferred_cleanup_after_shutdown_timeout():
+    """
+    Verifies deferred HandLandmarker cleanup when stop(timeout) times out:
+    1. worker is intentionally blocked;
+    2. stop(short_timeout) returns while worker remains blocked;
+    3. resource has NOT been closed concurrently;
+    4. test releases worker operation;
+    5. worker exits;
+    6. resource is eventually closed exactly once;
+    7. calling stop() or close() again remains idempotent.
+    """
+    class BlockableLandmarker:
+        def __init__(self):
+            self.close_count = 0
+            self.process_entered = threading.Event()
+            self.unblock_process = threading.Event()
+
+        def process(self, image):
+            self.process_entered.set()
+            self.unblock_process.wait(timeout=5.0)
+            return None
+
+        def close(self):
+            self.close_count += 1
+
+    class SequencedMockCamera:
+        def __init__(self):
+            self.frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            self.frame_id = 0
+
+        def read_sequenced(self):
+            self.frame_id += 1
+            return True, self.frame, self.frame_id, time.perf_counter()
+
+    mock_lm = BlockableLandmarker()
+    cam = SequencedMockCamera()
+    async_tracker = AsyncHandTracker(camera=cam, init_mediapipe=False)
+    async_tracker.tracker.landmarker = mock_lm
+    async_tracker.tracker.hands = mock_lm
+    async_tracker.start()
+
+    # 1. Wait until worker is inside process() and intentionally blocked
+    assert mock_lm.process_entered.wait(timeout=2.0) is True
+
+    # 2. stop(short_timeout) returns boundedly while worker remains blocked
+    async_tracker.stop(timeout=0.01)
+    assert async_tracker._thread is not None and async_tracker._thread.is_alive() is True
+
+    # 3. Resource has NOT been closed concurrently
+    assert mock_lm.close_count == 0
+
+    # 4. Test releases worker operation
+    mock_lm.unblock_process.set()
+
+    # 5. Worker exits
+    async_tracker._thread.join(timeout=2.0)
+    assert async_tracker._thread.is_alive() is False
+
+    # 6. Resource is eventually closed exactly once
+    assert mock_lm.close_count == 1
+
+    # 7. Calling stop() or close() again remains idempotent
+    async_tracker.stop()
+    async_tracker.close()
+    assert mock_lm.close_count == 1
 
 
