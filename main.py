@@ -921,7 +921,7 @@ class GestureARApp:
         """Renders developer diagnostics overlay with pipeline timing breakdown."""
         h, w = frame.shape[:2]
         panel_w = 430
-        panel_h = 240
+        panel_h = 265 if (hasattr(self, "guitar") and self.guitar is not None) else 240
         px1 = 20
         py1 = h - panel_h - 36
         px2 = px1 + panel_w
@@ -962,6 +962,15 @@ class GestureARApp:
             f"Audio Bus:       {voices} active voices | Peak: {peak:.1f}% (Soft Limiter: Active)",
             f"Engine Config:   Filter={self.hand_tracker.filter_mode.upper()} | Profile={getattr(self.hand_tracker, 'tracking_profile', 'STABLE')} | Quality={self.quality_profile}",
         ]
+
+        if hasattr(self, "guitar") and self.guitar is not None:
+            g = self.guitar
+            last_note = g.last_strum_note or "None"
+            strums = g.strum_count
+            played_str = "Sounded" if g.last_strum_played is True else ("Muted" if g.last_strum_played is False else "Idle")
+            underflows = getattr(self.audio_engine, "underflow_count", 0)
+            audio_status = "Online" if (getattr(self.audio_engine, "is_running", False) and getattr(self.audio_engine, "audio_available", False)) else ("Silent" if getattr(self.audio_engine, "is_running", False) else "Standby")
+            lines.append(f"Guitar Telemetry: Strums={strums} | Last={last_note} ({played_str}) | Audio={audio_status} (UF: {underflows})")
 
         for idx, line in enumerate(lines):
             y_text = py1 + 46 + idx * 22
