@@ -115,3 +115,25 @@ def test_pyproject_python_version_support():
     assert '"Programming Language :: Python :: 3.10"' in text
     assert '"Programming Language :: Python :: 3.11"' in text
 
+
+def test_models_package_declarations_and_artifacts():
+    """Verifies that models package assets, provenance, notice, and license are present."""
+    repo_root = Path(__file__).resolve().parent.parent
+    models_dir = repo_root / "models"
+    assert (models_dir / "hand_landmarker.task").is_file()
+    assert (models_dir / "MODEL_PROVENANCE.md").is_file()
+    assert (models_dir / "NOTICE").is_file()
+    assert (models_dir / "LICENSE.Apache-2.0").is_file()
+
+    provenance_text = (models_dir / "MODEL_PROVENANCE.md").read_text(encoding="utf-8")
+    assert "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1" in provenance_text
+    assert "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" in provenance_text
+
+    notice_text = (models_dir / "NOTICE").read_text(encoding="utf-8")
+    assert "Google LLC" in notice_text
+    assert "Apache License, Version 2.0" in notice_text
+
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'packages = ["models"]' in pyproject_text
+    assert '"models" = ["*.task", "*.md", "LICENSE*", "NOTICE*"]' in pyproject_text
+

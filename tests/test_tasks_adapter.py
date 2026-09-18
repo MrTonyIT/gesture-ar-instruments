@@ -107,21 +107,31 @@ def test_hand_tracker_model_resolution():
     assert resolved.endswith("hand_landmarker.task")
 
 
-def test_hand_tracker_filter_and_complexity_switching():
-    """Verifies filter mode and model complexity switching and temporal state reset."""
-    tracker = HandTracker(init_mediapipe=False, model_complexity=1, filter_mode="one_euro")
+def test_hand_tracker_filter_and_profile_switching():
+    """Verifies filter mode and tracking profile switching and temporal state reset."""
+    tracker = HandTracker(init_mediapipe=False, tracking_profile="STABLE", filter_mode="one_euro")
 
     # Filter switching
     assert tracker.set_filter_mode("one_euro") is False  # No-op
     assert tracker.set_filter_mode("deadband") is True
     assert tracker.filter_mode == "deadband"
 
-    # Complexity switching
-    assert tracker.set_model_complexity(1) is False  # No-op
+    # Profile switching
+    assert tracker.set_tracking_profile("STABLE") is False  # No-op
+    assert tracker.set_tracking_profile("RESPONSIVE") is True
+    assert tracker.tracking_profile == "RESPONSIVE"
+    assert tracker.set_tracking_profile("RESPONSIVE") is False  # No-op
+    assert tracker.set_tracking_profile("STABLE") is True
+    assert tracker.tracking_profile == "STABLE"
+    assert tracker.set_tracking_profile("INVALID") is False  # Invalid profile ignored
+
+    # Backward-compatibility: set_model_complexity
+    assert tracker.set_model_complexity(1) is False  # Already STABLE (1)
     assert tracker.set_model_complexity(0) is True
+    assert tracker.tracking_profile == "RESPONSIVE"
     assert tracker.model_complexity == 0
-    assert tracker.set_model_complexity(0) is False  # No-op
     assert tracker.set_model_complexity(1) is True
+    assert tracker.tracking_profile == "STABLE"
     assert tracker.model_complexity == 1
     assert tracker.set_model_complexity(5) is False  # Invalid complexity ignored
 
@@ -272,3 +282,303 @@ def test_clean_idempotent_close():
     assert tracker.hands is None
     # Calling close again must not error
     tracker.close()
+
+
+def test_model_provenance_and_checksum():
+    """
+    Verifies that models/hand_landmarker.task matches the exact official
+    Google MediaPipe float16 version 1 artifact digest and size.
+    """
+    import hashlib
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_path = os.path.join(repo_root, "models", "hand_landmarker.task")
+    assert os.path.exists(model_path), f"Model missing at {model_path}"
+
+    file_size = os.path.getsize(model_path)
+    assert file_size == 7819105, f"Expected size 7819105, got {file_size}"
+
+    with open(model_path, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+
+    expected_sha256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+    assert digest == expected_sha256, f"Checksum mismatch: {digest} != {expected_sha256}"
+
+
+def test_model_resolution_cwd_isolation(tmp_path, monkeypatch):
+    """
+    Verifies that a fake models/hand_landmarker.task in the current working directory
+    is strictly ignored and does NOT shadow the bundled package model.
+    """
+    fake_models_dir = tmp_path / "models"
+    fake_models_dir.mkdir(parents=True)
+    fake_task = fake_models_dir / "hand_landmarker.task"
+    fake_task.write_bytes(b"FAKE_SHADOWING_MODEL_CONTENT")
+
+    monkeypatch.chdir(tmp_path)
+    tracker = HandTracker(init_mediapipe=False)
+    resolved = tracker._resolve_model_path()
+
+    assert not resolved.startswith(str(tmp_path)), "CWD model shadowed bundled package model!"
+    assert os.path.exists(resolved)
+    assert os.path.getsize(resolved) == 7819105
+
+
+def test_hand_landmarker_options_inspection(monkeypatch):
+    """
+    Inspects actual HandLandmarkerOptions passed to create_from_options:
+    - STABLE (0.65) vs RESPONSIVE (0.50) confidence settings
+    - No-op profile assignment does not recreate landmarker
+    - Real profile transition recreates it exactly once and resets temporal state
+    """
+    captured_options = []
+
+    class DummyLandmarker:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    try:
+        from mediapipe.tasks.python import vision as mp_vision
+
+        def mock_create(opts):
+            captured_options.append(opts)
+            return DummyLandmarker()
+
+        monkeypatch.setattr(mp_vision.HandLandmarker, "create_from_options", mock_create)
+    except (ImportError, AttributeError):
+        pytest.skip("MediaPipe Tasks vision API not available in current environment")
+
+    tracker = HandTracker(init_mediapipe=True, tracking_profile="STABLE")
+    assert len(captured_options) == 1
+    opts_stable = captured_options[0]
+    assert opts_stable.min_hand_detection_confidence == 0.65
+    assert opts_stable.min_hand_presence_confidence == 0.65
+    assert opts_stable.min_tracking_confidence == 0.65
+    assert tracker.last_landmarker_options is opts_stable
+
+    # No-op profile assignment: landmarker not recreated
+    assert tracker.set_tracking_profile("STABLE") is False
+    assert len(captured_options) == 1
+    assert tracker.landmarker_creation_count == 1
+
+    # Real profile switch: landmarker recreated with 0.50 thresholds
+    assert tracker.set_tracking_profile("RESPONSIVE") is True
+    assert len(captured_options) == 2
+    opts_responsive = captured_options[1]
+    assert opts_responsive.min_hand_detection_confidence == 0.50
+    assert opts_responsive.min_hand_presence_confidence == 0.50
+    assert opts_responsive.min_tracking_confidence == 0.50
+    assert tracker.landmarker_creation_count == 2
+    assert tracker.last_landmarker_options is opts_responsive
+
+    tracker.close()
+
+
+def test_visual_profile_changes_do_not_rebuild_tracker():
+    """
+    Verifies that changing visual quality profiles (HIGH -> BALANCED -> LOW)
+    in GestureARApp is decoupled from tracking and does NOT recreate HandLandmarker.
+    """
+    from main import GestureARApp
+
+    app = GestureARApp(start_threads=False, init_mediapipe=False, quality_profile="HIGH")
+    try:
+        initial_creation_count = app.async_tracker.tracker.landmarker_creation_count
+        initial_profile = app.async_tracker.tracking_profile
+        assert initial_profile == "STABLE"
+
+        app.set_quality_profile("BALANCED")
+        assert app.quality_profile == "BALANCED"
+        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracker.landmarker_creation_count == initial_creation_count
+
+        app.set_quality_profile("LOW")
+        assert app.quality_profile == "LOW"
+        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracker.landmarker_creation_count == initial_creation_count
+
+        app.set_quality_profile("HIGH")
+        assert app.quality_profile == "HIGH"
+        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracker.landmarker_creation_count == initial_creation_count
+    finally:
+        app.shutdown()
+
+
+def test_malformed_landmark_counts_rejection():
+    """
+    Verifies that hands with fewer or more than 21 landmarks are rejected safely:
+    - 20 landmarks: rejected
+    - 22 landmarks: rejected
+    - 21 landmarks: accepted
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # 1. 20 landmarks: rejected
+    lms_20 = [MockNormalizedLandmark(x=0.5, y=0.5) for _ in range(20)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_20],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_20 = tracker.process(frame, timestamp=1.0)
+    assert len(res_20) == 0, f"Expected 0 hands for 20 landmarks, got {len(res_20)}"
+
+    # 2. 22 landmarks: rejected
+    lms_22 = [MockNormalizedLandmark(x=0.5, y=0.5) for _ in range(22)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_22],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_22 = tracker.process(frame, timestamp=1.1)
+    assert len(res_22) == 0, f"Expected 0 hands for 22 landmarks, got {len(res_22)}"
+
+    # 3. 21 landmarks: accepted
+    lms_21 = [MockNormalizedLandmark(x=0.5, y=0.5) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_21],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res_21 = tracker.process(frame, timestamp=1.2)
+    assert len(res_21) == 1, f"Expected 1 hand for 21 landmarks, got {len(res_21)}"
+    assert res_21[0].handedness == "Right"  # Mirrored from 'Left'
+
+
+def test_handedness_category_validation():
+    """
+    Verifies that only canonical handedness labels ('Left', 'Right') are accepted:
+    - 'Left' -> accepted as mirrored 'Right'
+    - 'Right' -> accepted as mirrored 'Left'
+    - empty string '' -> rejected
+    - 'Unknown' -> rejected
+    - malformed category object -> rejected
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    lms_21 = [MockNormalizedLandmark(x=0.5, y=0.5) for _ in range(21)]
+
+    # 1. Canonical 'Left' -> mirrored 'Right'
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_21],
+        handedness=[[MockCategory(category_name="Left")]],
+    )
+    res = tracker.process(frame, timestamp=1.0)
+    assert len(res) == 1
+    assert res[0].handedness == "Right"
+
+    # 2. Canonical 'Right' -> mirrored 'Left'
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_21],
+        handedness=[[MockCategory(category_name="Right")]],
+    )
+    res = tracker.process(frame, timestamp=1.1)
+    assert len(res) == 1
+    assert res[0].handedness == "Left"
+
+    # 3. Empty string category
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_21],
+        handedness=[[MockCategory(category_name="")]],
+    )
+    res_empty = tracker.process(frame, timestamp=1.2)
+    assert len(res_empty) == 0
+
+    # 4. 'Unknown' category
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_21],
+        handedness=[[MockCategory(category_name="Unknown")]],
+    )
+    res_unk = tracker.process(frame, timestamp=1.3)
+    assert len(res_unk) == 0
+
+    # 5. Malformed category (empty list)
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_21],
+        handedness=[[]],
+    )
+    res_malformed = tracker.process(frame, timestamp=1.4)
+    assert len(res_malformed) == 0
+
+
+def test_two_hand_simultaneous_tracking_independent_state():
+    """
+    Verifies that two simultaneous hands:
+    - Retain correct mirrored handedness
+    - Produce independent filter state instances
+    - Produce independent velocities without cross-hand leakage
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1: Hand 0 is raw 'Left' (mirrored to 'Right') at x=0.20, y=0.50 -> screen px (800, 500)
+    #          Hand 1 is raw 'Right' (mirrored to 'Left') at x=0.80, y=0.50 -> screen px (200, 500)
+    lms_h0_f1 = [MockNormalizedLandmark(x=0.20, y=0.50) for _ in range(21)]
+    lms_h1_f1 = [MockNormalizedLandmark(x=0.80, y=0.50) for _ in range(21)]
+
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_h0_f1, lms_h1_f1],
+        handedness=[
+            [MockCategory(category_name="Left")],
+            [MockCategory(category_name="Right")],
+        ],
+    )
+
+    hands_f1 = tracker.process(frame, timestamp=1.000)
+    assert len(hands_f1) == 2
+
+    by_hand = {h.handedness: h for h in hands_f1}
+    assert "Right" in by_hand
+    assert "Left" in by_hand
+
+    # Baseline velocities are zero
+    assert by_hand["Right"].wrist_velocity == (0.0, 0.0)
+    assert by_hand["Left"].wrist_velocity == (0.0, 0.0)
+
+    # Frame 2 at dt = 0.050s:
+    # Hand 0 (mirrored Right) moves: raw_x 0.20 -> 0.15 (mirrored_x 0.80 -> 0.85, +50px), y unchanged
+    # Hand 1 (mirrored Left) moves: raw_x 0.80 -> 0.83 (mirrored_x 0.20 -> 0.17, -30px), y +20px (0.50 -> 0.52)
+    lms_h0_f2 = [MockNormalizedLandmark(x=0.15, y=0.50) for _ in range(21)]
+    lms_h1_f2 = [MockNormalizedLandmark(x=0.83, y=0.52) for _ in range(21)]
+
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms_h0_f2, lms_h1_f2],
+        handedness=[
+            [MockCategory(category_name="Left")],
+            [MockCategory(category_name="Right")],
+        ],
+    )
+
+    hands_f2 = tracker.process(frame, timestamp=1.050)
+    assert len(hands_f2) == 2
+    by_hand2 = {h.handedness: h for h in hands_f2}
+
+    # Expected velocity for Right hand: vx = +50 / 0.05 = +1000 px/s, vy = 0 px/s
+    np.testing.assert_allclose(by_hand2["Right"].wrist_velocity[0], 1000.0, rtol=1e-3)
+    np.testing.assert_allclose(by_hand2["Right"].wrist_velocity[1], 0.0, atol=1e-3)
+
+    # Expected velocity for Left hand: vx = -30 / 0.05 = -600 px/s, vy = +20 / 0.05 = +400 px/s
+    np.testing.assert_allclose(by_hand2["Left"].wrist_velocity[0], -600.0, rtol=1e-3)
+    np.testing.assert_allclose(by_hand2["Left"].wrist_velocity[1], 400.0, rtol=1e-3)
+
+    # Assert independent filter instances exist for both
+    assert "Right" in tracker._filters
+    assert "Left" in tracker._filters
+    assert tracker._filters["Right"] is not tracker._filters["Left"]

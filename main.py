@@ -93,7 +93,6 @@ class QualityProfileConfig:
     """Explicit performance and visual quality profile configuration."""
 
     name: str
-    model_complexity: int
     max_particles: int
     enable_glow_effects: bool
     enable_shockwave_flash: bool
@@ -103,7 +102,6 @@ class QualityProfileConfig:
 QUALITY_PROFILES: Dict[str, QualityProfileConfig] = {
     "HIGH": QualityProfileConfig(
         name="HIGH",
-        model_complexity=1,
         max_particles=18,
         enable_glow_effects=True,
         enable_shockwave_flash=True,
@@ -111,7 +109,6 @@ QUALITY_PROFILES: Dict[str, QualityProfileConfig] = {
     ),
     "BALANCED": QualityProfileConfig(
         name="BALANCED",
-        model_complexity=0,
         max_particles=8,
         enable_glow_effects=True,
         enable_shockwave_flash=False,
@@ -119,7 +116,6 @@ QUALITY_PROFILES: Dict[str, QualityProfileConfig] = {
     ),
     "LOW": QualityProfileConfig(
         name="LOW",
-        model_complexity=0,
         max_particles=0,
         enable_glow_effects=False,
         enable_shockwave_flash=False,
@@ -171,11 +167,9 @@ class GestureARApp:
             self.async_tracker = AsyncHandTracker(
                 camera=self.camera,
                 max_num_hands=2,
-                min_detection_confidence=0.55,
-                min_tracking_confidence=0.50,
                 ema_alpha=0.65,
                 filter_mode="one_euro",
-                model_complexity=1,
+                tracking_profile="STABLE",
                 init_mediapipe=init_mediapipe,
             )
             if start_threads:
@@ -213,7 +207,7 @@ class GestureARApp:
     def _on_tracking_pipeline_changed(self) -> None:
         """
         Resets active instrument motion-collision state when an application-level
-        tracking pipeline switch occurs (filter mode, model complexity, or quality profile).
+        tracking pipeline switch occurs (filter mode, tracking profile, or reset).
         Preserves currently selected chord and instrument state.
         """
         if hasattr(self, "piano") and self.piano is not None:
@@ -222,16 +216,12 @@ class GestureARApp:
             self.guitar.reset_motion_state()
 
     def set_quality_profile(self, profile: str) -> None:
-        """Applies explicit quality profile (HIGH, BALANCED, LOW)."""
+        """Applies explicit visual quality profile (HIGH, BALANCED, LOW)."""
         key = profile.upper()
         if key not in QUALITY_PROFILES:
             key = "HIGH"
         self.quality_profile = key
         self.quality_config = QUALITY_PROFILES[key]
-        if hasattr(self, "async_tracker") and self.async_tracker is not None:
-            changed = self.async_tracker.set_model_complexity(self.quality_config.model_complexity)
-            if changed:
-                self._on_tracking_pipeline_changed()
 
     def handle_key(self, raw_key: int) -> Optional[str]:
         """
@@ -293,15 +283,16 @@ class GestureARApp:
             logger.info("Visual Quality Profile switched to: %s", self.quality_profile)
             return "QUALITY"
 
-        # 6. AI Model Complexity Toggle (m/M): ULTRA (1) vs HYPER-SPEED (0)
+        # 6. AI Tracking Profile Toggle (m/M): STABLE (0.65 conf) vs RESPONSIVE (0.50 conf)
         if key in (ord("m"), ord("M")):
-            new_mc = 0 if self.async_tracker.model_complexity == 1 else 1
-            changed = self.async_tracker.set_model_complexity(new_mc)
+            current_profile = getattr(self.async_tracker, "tracking_profile", "STABLE")
+            new_profile = "RESPONSIVE" if current_profile == "STABLE" else "STABLE"
+            changed = self.async_tracker.set_tracking_profile(new_profile)
             if changed:
                 self._on_tracking_pipeline_changed()
-            mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
-            logger.info("AI tracking model switched to: %s", mode_lbl)
-            return "MODEL_COMPLEXITY"
+            mode_lbl = "STABLE (Stricter 0.65 Confidence)" if new_profile == "STABLE" else "RESPONSIVE (Permissive 0.50 Confidence)"
+            logger.info("AI tracking profile switched to: %s", mode_lbl)
+            return "TRACKING_PROFILE"
 
         # 7. Hand Tracking Filter Mode Cycle (k/K)
         if key in FILTER_CYCLE_KEYS:
@@ -719,7 +710,7 @@ class GestureARApp:
 
         # 4. Zone 3: Telemetry Capsule (Center) - Non-Overlapping Spacing
         ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
-        model_tag = "ULTRA" if getattr(self.async_tracker, "model_complexity", 1) == 1 else "HYPER"
+        model_tag = getattr(self.async_tracker, "tracking_profile", "STABLE")
         filt_m = self.hand_tracker.filter_mode.lower()
         if filt_m == "one_euro":
             mode_tag = "1-EURO"
@@ -965,7 +956,7 @@ class GestureARApp:
             f"AI Inference:    {ai_fps:.1f} FPS  (Lat: {ai_lat:.1f} ms, Stale Skip: {stale_frames})",
             f"Active Pipeline: Gesture {self.telemetry['gest_ms']:.1f}ms | Render {self.telemetry['rend_ms']:.1f}ms",
             f"Audio Bus:       {voices} active voices | Peak: {peak:.1f}% (Soft Limiter: Active)",
-            f"Engine Config:   Filter={self.hand_tracker.filter_mode.upper()} | Quality={self.quality_profile}",
+            f"Engine Config:   Filter={self.hand_tracker.filter_mode.upper()} | Profile={getattr(self.hand_tracker, 'tracking_profile', 'STABLE')} | Quality={self.quality_profile}",
         ]
 
         for idx, line in enumerate(lines):

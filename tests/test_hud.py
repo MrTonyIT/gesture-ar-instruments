@@ -68,7 +68,7 @@ def test_hud_rendering_and_layout(app):
             avail_w = space_right - space_left
 
             if avail_w >= 410:
-                fps_text = "FPS: 60.0 | AI: 58.0 (ULTRA) | 1-EURO | Q:HIG | H:2"
+                fps_text = "FPS: 60.0 | AI: 58.0 (STABLE) | 1-EURO | Q:HIG | H:2"
             else:
                 fps_text = "60FPS | AI:58 | 1-EURO | H:2"
 
@@ -111,11 +111,17 @@ def test_diagnostics_hud_rendering(app):
 
 
 def test_tracker_controls_and_kinematics(app):
-    """Verifies AsyncHandTracker and HandTracker model complexity and filter mode controls."""
-    app.async_tracker.model_complexity = 0
-    assert app.async_tracker.model_complexity == 0
-    app.async_tracker.model_complexity = 1
+    """Verifies AsyncHandTracker and HandTracker tracking profile and filter mode controls."""
+    app.async_tracker.tracking_profile = "RESPONSIVE"
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
+    app.async_tracker.tracking_profile = "STABLE"
+    assert app.async_tracker.tracking_profile == "STABLE"
+    # Backward compatibility mapping
     assert app.async_tracker.model_complexity == 1
+    app.async_tracker.model_complexity = 0
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
+    app.async_tracker.model_complexity = 1
+    assert app.async_tracker.tracking_profile == "STABLE"
 
     app.async_tracker.filter_mode = "deadband"
     assert app.hand_tracker.filter_mode == "deadband"
@@ -184,9 +190,9 @@ def test_key_dispatch_and_lowercase_r_no_diagnostics_collision(app):
     assert app.handle_key(ord("v")) == "QUALITY"
     assert app.handle_key(ord("V")) == "QUALITY"
 
-    # 6. Test Model complexity keys: m, M
-    assert app.handle_key(ord("m")) == "MODEL_COMPLEXITY"
-    assert app.handle_key(ord("M")) == "MODEL_COMPLEXITY"
+    # 6. Test Tracking profile keys: m, M
+    assert app.handle_key(ord("m")) == "TRACKING_PROFILE"
+    assert app.handle_key(ord("M")) == "TRACKING_PROFILE"
 
     # 7. Test Camera settings keys: p, P
     assert app.handle_key(ord("p")) == "CAMERA_SETTINGS"
@@ -205,7 +211,7 @@ def test_key_dispatch_and_lowercase_r_no_diagnostics_collision(app):
         ord("r"): "RESET", ord("R"): "RESET",
         ord("k"): "FILTER", ord("K"): "FILTER",
         ord("v"): "QUALITY", ord("V"): "QUALITY",
-        ord("m"): "MODEL_COMPLEXITY", ord("M"): "MODEL_COMPLEXITY",
+        ord("m"): "TRACKING_PROFILE", ord("M"): "TRACKING_PROFILE",
         ord("p"): "CAMERA_SETTINGS", ord("P"): "CAMERA_SETTINGS",
         ord("`"): "DIAGNOSTICS", 9: "DIAGNOSTICS",
     }

@@ -7,7 +7,8 @@ Key Features:
 - ThreadedCamera: Dedicated background worker thread continuously capturing frames
   from cv2.VideoCapture at maximum FPS to eliminate I/O blocking.
 - HandTracker:
-  * Wraps Google MediaPipe Hands with min_detection_confidence=0.55, min_tracking_confidence=0.50.
+  * Wraps Google MediaPipe Tasks HandLandmarker with configurable tracking profiles
+    (STABLE: 0.65 confidence thresholds, RESPONSIVE: 0.50 confidence thresholds).
   * Raw RGB frame processing paired with mirrored coordinate transformation:
     X_screen = (1.0 - x) * Width.
   * Explicit Handedness label swapping ('Left' <-> 'Right') for intuitive mirrored AR.
@@ -557,6 +558,20 @@ class OneEuroFilter(BaseFilter):
         self.prev_time = None
 
 
+TRACKING_PROFILES: Dict[str, Dict[str, float]] = {
+    "STABLE": {
+        "detection_confidence": 0.65,
+        "presence_confidence": 0.65,
+        "tracking_confidence": 0.65,
+    },
+    "RESPONSIVE": {
+        "detection_confidence": 0.50,
+        "presence_confidence": 0.50,
+        "tracking_confidence": 0.50,
+    },
+}
+
+
 class HandTracker:
     """
     MediaPipe Tasks HandLandmarker Wrapper with Mirrored Coordinates & Pluggable Filtering.
@@ -564,7 +579,7 @@ class HandTracker:
     Specifications:
     - Wraps modern Google MediaPipe Tasks HandLandmarker using bundled models/hand_landmarker.task.
     - Operates in RunningMode.VIDEO (with strictly monotonic millisecond timestamps) or RunningMode.IMAGE.
-    - Model complexity 0 (Lite / Hyper speed, confidence 0.50) or 1 (Full / Ultra precision, confidence 0.65).
+    - Tracking profiles: 'STABLE' (stricter 0.65 confidence thresholds) or 'RESPONSIVE' (permissive 0.50 confidence thresholds).
     - Flips X coordinate: X_screen = (1.0 - x) * Width.
     - Swaps Handedness label: 'Left' becomes 'Right' and vice versa.
     - Unified BaseFilter hierarchy (OneEuroFilter, DeadbandFilter, EMAFilter, RawFilter).
@@ -580,16 +595,24 @@ class HandTracker:
         min_tracking_confidence: Optional[float] = None,
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",  # "one_euro", "deadband", "ema", "raw"
-        model_complexity: int = 1,      # 1 = Full (Ultra precision), 0 = Lite (Hyper speed)
+        tracking_profile: str = "STABLE",  # "STABLE" (0.65 conf) or "RESPONSIVE" (0.50 conf)
         init_mediapipe: bool = True,
         model_path: Optional[str] = None,
+        model_complexity: Optional[int] = None,  # Deprecated: use tracking_profile
     ) -> None:
         self.max_num_hands = max_num_hands
         self.min_detection_confidence = min_detection_confidence
         self.min_tracking_confidence = min_tracking_confidence
         self.ema_alpha = ema_alpha
         self.filter_mode = filter_mode
-        self.model_complexity = model_complexity
+
+        if model_complexity is not None:
+            self.tracking_profile = "STABLE" if model_complexity == 1 else "RESPONSIVE"
+        else:
+            self.tracking_profile = str(tracking_profile).strip().upper()
+        if self.tracking_profile not in TRACKING_PROFILES:
+            self.tracking_profile = "STABLE"
+
         self.init_mediapipe = init_mediapipe
         self.model_path = model_path
 
@@ -602,6 +625,8 @@ class HandTracker:
 
         self.landmarker = None
         self.hands = None  # Reference alias for compatibility with callers/mocks
+        self.last_landmarker_options: Optional[Any] = None  # Stored HandLandmarkerOptions for test inspection
+        self.landmarker_creation_count: int = 0  # Monotonic counter of HandLandmarker creations
         self._last_video_timestamp_ms: int = 0
 
         if not self.init_mediapipe:
@@ -616,22 +641,24 @@ class HandTracker:
             )
 
     def _resolve_model_path(self) -> str:
-        """Resolves path to hand_landmarker.task model asset."""
+        """
+        Resolves path to hand_landmarker.task model asset.
+        Only explicit overrides (model_path or GESTURE_AR_MODEL_PATH) or the bundled
+        package asset are trusted. Arbitrary CWD assets are strictly ignored to prevent shadowing.
+        """
         if self.model_path and os.path.exists(self.model_path):
+            logger.info("Using explicit custom model_path override: %s", self.model_path)
             return os.path.abspath(self.model_path)
 
         env_path = os.environ.get("GESTURE_AR_MODEL_PATH")
         if env_path and os.path.exists(env_path):
+            logger.info("Using explicit GESTURE_AR_MODEL_PATH environment override: %s", env_path)
             return os.path.abspath(env_path)
 
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
         candidate_pkg = os.path.join(pkg_dir, "models", "hand_landmarker.task")
         if os.path.exists(candidate_pkg):
             return candidate_pkg
-
-        cwd_pkg = os.path.join(os.getcwd(), "models", "hand_landmarker.task")
-        if os.path.exists(cwd_pkg):
-            return cwd_pkg
 
         try:
             import models
@@ -670,10 +697,10 @@ class HandTracker:
             delegate=mp_tasks.BaseOptions.Delegate.CPU,
         )
 
-        # Quality/complexity mapping
-        det_conf = 0.65 if self.model_complexity == 1 else 0.50
-        track_conf = 0.65 if self.model_complexity == 1 else 0.50
-        presence_conf = 0.65 if self.model_complexity == 1 else 0.50
+        conf_settings = TRACKING_PROFILES.get(self.tracking_profile, TRACKING_PROFILES["STABLE"])
+        det_conf = conf_settings["detection_confidence"]
+        presence_conf = conf_settings["presence_confidence"]
+        track_conf = conf_settings["tracking_confidence"]
 
         if self.min_detection_confidence is not None:
             det_conf = self.min_detection_confidence
@@ -689,13 +716,16 @@ class HandTracker:
             min_hand_presence_confidence=presence_conf,
             min_tracking_confidence=track_conf,
         )
+        self.last_landmarker_options = options
         self.landmarker = mp_vision.HandLandmarker.create_from_options(options)
+        self.landmarker_creation_count += 1
         self.hands = self.landmarker
         self._last_video_timestamp_ms = 0
         logger.info(
-            "MediaPipe Tasks HandLandmarker initialized (model_complexity=%d, det_conf=%.2f, filter_mode=%s, model=%s)",
-            self.model_complexity,
+            "MediaPipe Tasks HandLandmarker initialized (profile=%s, det_conf=%.2f, track_conf=%.2f, filter_mode=%s, model=%s)",
+            self.tracking_profile,
             det_conf,
+            track_conf,
             self.filter_mode,
             os.path.basename(model_file),
         )
@@ -740,18 +770,38 @@ class HandTracker:
         logger.info("HandTracker filter mode switched to: %s", norm_mode)
         return True
 
-    def set_model_complexity(self, complexity: int) -> bool:
+    def set_tracking_profile(self, profile: str) -> bool:
         """
-        Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full).
-        Returns True if the complexity actually changed, False if it was a no-op.
+        Dynamically switches tracking profile ("STABLE" or "RESPONSIVE").
+        STABLE uses stricter confidence thresholds (0.65).
+        RESPONSIVE uses more permissive confidence thresholds (0.50).
+        Returns True if the profile actually changed, False if it was a no-op.
         """
-        if complexity not in (0, 1) or complexity == self.model_complexity:
+        norm_profile = str(profile).strip().upper()
+        if norm_profile not in TRACKING_PROFILES or norm_profile == self.tracking_profile:
             return False
-        self.model_complexity = complexity
+        self.tracking_profile = norm_profile
         if getattr(self, "init_mediapipe", True) and (self.landmarker is not None or self.hands is not None):
             self._init_landmarker()
         self.reset_temporal_state()
+        logger.info("HandTracker tracking profile switched to: %s", norm_profile)
         return True
+
+    def set_model_complexity(self, complexity: int) -> bool:
+        """Deprecated: Use set_tracking_profile('STABLE' | 'RESPONSIVE') instead."""
+        if complexity not in (0, 1):
+            return False
+        target = "STABLE" if complexity == 1 else "RESPONSIVE"
+        return self.set_tracking_profile(target)
+
+    @property
+    def model_complexity(self) -> int:
+        """Deprecated: Maps tracking_profile back to legacy integer (1 for STABLE, 0 for RESPONSIVE)."""
+        return 1 if self.tracking_profile == "STABLE" else 0
+
+    @model_complexity.setter
+    def model_complexity(self, complexity: int) -> None:
+        self.set_model_complexity(complexity)
 
     def process(self, raw_bgr_frame: np.ndarray, timestamp: Optional[float] = None) -> List[HandData]:
         """
@@ -833,13 +883,29 @@ class HandTracker:
 
         if raw_hand_landmarks and raw_handedness:
             for hand_landmarks, classification in zip(raw_hand_landmarks, raw_handedness):
+                # 1. Handedness category validation (Requirement 7)
+                raw_label = None
                 if isinstance(classification, list) and len(classification) > 0:
                     cat = classification[0]
-                    raw_label = getattr(cat, "category_name", None) or getattr(cat, "label", "Right")
+                    raw_label = getattr(cat, "category_name", None) or getattr(cat, "label", None)
                 elif hasattr(classification, "classification") and len(classification.classification) > 0:
-                    raw_label = classification.classification[0].label
-                else:
-                    raw_label = "Right"
+                    raw_label = getattr(classification.classification[0], "label", None)
+
+                if not raw_label or raw_label not in ("Left", "Right"):
+                    logger.debug("Rejected hand with non-canonical handedness label: %r", raw_label)
+                    continue
+
+                # 2. Landmark count validation: require exactly 21 landmarks (Requirement 6)
+                lms = getattr(hand_landmarks, "landmark", hand_landmarks)
+                try:
+                    lm_count = len(lms)
+                except TypeError:
+                    logger.warning("Rejected malformed hand: unmeasurable landmark container")
+                    continue
+
+                if lm_count != 21:
+                    logger.warning("Rejected malformed hand: expected 21 landmarks, received %d", lm_count)
+                    continue
 
                 # Spec: Invert Handedness labels so user's physical left hand corresponds to mirrored screen left
                 mirrored_label = "Right" if raw_label == "Left" else "Left"
@@ -847,7 +913,6 @@ class HandTracker:
 
                 # Extract normalized coordinates with mirrored X: X_screen = (1.0 - x)
                 raw_coords = np.empty((21, 3), dtype=np.float32)
-                lms = getattr(hand_landmarks, "landmark", hand_landmarks)
                 for idx, lm in enumerate(lms):
                     raw_coords[idx, 0] = 1.0 - lm.x  # Mirrored horizontal coordinate
                     raw_coords[idx, 1] = lm.y
@@ -956,12 +1021,13 @@ class AsyncHandTracker:
         self,
         camera: ThreadedCamera,
         max_num_hands: int = 2,
-        min_detection_confidence: float = 0.55,
-        min_tracking_confidence: float = 0.50,
+        min_detection_confidence: Optional[float] = None,
+        min_tracking_confidence: Optional[float] = None,
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",
-        model_complexity: int = 1,
+        tracking_profile: str = "STABLE",
         init_mediapipe: bool = True,
+        model_complexity: Optional[int] = None,  # Deprecated: use tracking_profile
     ) -> None:
         self.camera = camera
         self.tracker = HandTracker(
@@ -970,8 +1036,9 @@ class AsyncHandTracker:
             min_tracking_confidence=min_tracking_confidence,
             ema_alpha=ema_alpha,
             filter_mode=filter_mode,
-            model_complexity=model_complexity,
+            tracking_profile=tracking_profile,
             init_mediapipe=init_mediapipe,
+            model_complexity=model_complexity,
         )
         self._config_lock = threading.Lock()
         self._snapshot_lock = threading.Lock()
@@ -1023,7 +1090,30 @@ class AsyncHandTracker:
         return changed
 
     @property
+    def tracking_profile(self) -> str:
+        with self._config_lock:
+            return self.tracker.tracking_profile
+
+    @tracking_profile.setter
+    def tracking_profile(self, profile: str) -> None:
+        self.set_tracking_profile(profile)
+
+    def set_tracking_profile(self, profile: str) -> bool:
+        """
+        Dynamically switches tracking profile ("STABLE" or "RESPONSIVE").
+        Returns True and clears snapshot if tracking profile actually changed,
+        or False and preserves snapshot if no-op.
+        """
+        with self._config_lock:
+            changed = self.tracker.set_tracking_profile(profile)
+        if changed:
+            with self._snapshot_lock:
+                self._latest_hands = []
+        return changed
+
+    @property
     def model_complexity(self) -> int:
+        """Deprecated: Maps tracking_profile back to legacy integer (1 for STABLE, 0 for RESPONSIVE)."""
         with self._config_lock:
             return self.tracker.model_complexity
 
@@ -1032,11 +1122,7 @@ class AsyncHandTracker:
         self.set_model_complexity(complexity)
 
     def set_model_complexity(self, complexity: int) -> bool:
-        """
-        Dynamically switches MediaPipe model complexity (0 = Lite, 1 = Full).
-        Returns True and clears snapshot if complexity actually changed,
-        or False and preserves snapshot if no-op.
-        """
+        """Deprecated: Use set_tracking_profile instead."""
         with self._config_lock:
             changed = self.tracker.set_model_complexity(complexity)
         if changed:

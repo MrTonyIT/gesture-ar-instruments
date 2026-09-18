@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python Version" />
   <img src="https://img.shields.io/badge/OpenCV-4.10.0.84-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" alt="OpenCV" />
-  <img src="https://img.shields.io/badge/MediaPipe-Hands-007ACC?style=for-the-badge&logo=google&logoColor=white" alt="MediaPipe" />
+  <img src="https://img.shields.io/badge/MediaPipe%20Tasks-0.10.35-007ACC?style=for-the-badge&logo=google&logoColor=white" alt="MediaPipe Tasks 0.10.35" />
   <img src="https://img.shields.io/badge/Audio-Procedural%20Synth%20(32%20Voices)-00E676?style=for-the-badge&logo=speaker&logoColor=white" alt="Audio Engine" />
   <img src="https://img.shields.io/badge/Tests-Passing-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Pytest" />
   <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License" />
@@ -49,7 +49,8 @@ An extensive automated test suite covers tracking filters, geometry, synthesis, 
   - `Gesture Machine`: State evaluation and touch collision processing time.
   - `Render Loop`: Vectorized alpha blending and HUD drawing time.
   - `Audio Bus`: Active concurrent voice count and peak amplitude with soft-limiter indicator.
-- **Visual Quality Profiles (`V` key)**: Cycle between `HIGH` (Model Complexity 1, 60 FPS target rate), `BALANCED` (Complexity 0), and `LOW` for maximum frame rate on low-power hardware.
+- **Visual Quality Profiles (`V` key)**: Cycle between `HIGH` (maximum particle and glow effects), `BALANCED`, and `LOW` (reduced visual effects for minimal overhead on low-power hardware).
+- **Tracking Profiles (`M` key)**: Toggle between `STABLE` (stricter 0.65 confidence thresholds) and `RESPONSIVE` (permissive 0.50 confidence thresholds).
 
 ### 🎛️ 4. Pluggable Tracking Filter Hierarchy
 Choose between four filtering strategies in `vision_tracker.py`:
@@ -102,7 +103,7 @@ flowchart TD
     end
 
     subgraph Tracking & Processing
-        CAM --> WORKER[AsyncHandTracker Worker\nMediaPipe Hands Worker Thread]
+        CAM --> WORKER[AsyncHandTracker Worker\nMediaPipe Tasks HandLandmarker]
         WORKER --> FILTER[Pluggable BaseFilter\n1€ / Deadband / EMA / Raw]
         FILTER --> KINEMATICS[Kinematic Dead-Reckoning\nPredictive Extrapolation]
     end
@@ -125,6 +126,25 @@ flowchart TD
 ---
 
 ## 🛠️ Installation & Quick Start
+
+### 🐧 Linux Native Prerequisites (Debian / Ubuntu)
+
+Before installing Python dependencies on Debian, Ubuntu, or minimal/headless Linux containers, install the necessary native OS libraries:
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+    libgles2 \
+    libegl1 \
+    libgl1 \
+    libglib2.0-0 \
+    libasound2-dev \
+    portaudio19-dev
+```
+
+> [!IMPORTANT]
+> The modern MediaPipe Tasks C++ native binaries probe EGL/GLES contexts at initialization (even during CPU-delegated inference in headless environments). Packages such as `libgles2` and `libegl1` provide these hardware and display interface bindings. Running `pip install .` alone installs Python wheels only and does not provision these operating-system libraries.
+
+On Windows, standard desktop installations provide the necessary graphics and multimedia runtimes natively.
 
 ### 1. Clone & Set Up Environment
 ```bash
@@ -200,8 +220,8 @@ python -m ruff check .
 | **Touch Chord** | Reach into top chord boxes `[1]`–`[9]` | Air Guitar | Direct AR touch selection |
 | **Strum Guitar** | Thumb (4) or Index (8) string crossing | Air Guitar | Strums 6 projected strings via 2D segment intersection in either stroke direction |
 | **Diagnostics** | `F3`, `Tab`, or `` ` `` | Telemetry HUD | Toggles developer diagnostics panel |
-| **Quality Mode** | `V` key | Application | Cycles `HIGH` $\to$ `BALANCED` $\to$ `LOW` |
-| **Model Complexity** | `M` key | Hand Tracking | Toggles `ULTRA (1)` $\leftrightarrow$ `HYPER-SPEED (0)` |
+| **Quality Mode** | `V` key | Application | Cycles `HIGH` $\to$ `BALANCED` $\to$ `LOW` visual effects |
+| **Tracking Profile** | `M` key | Hand Tracking | Toggles `STABLE` (0.65 conf) $\leftrightarrow$ `RESPONSIVE` (0.50 conf) |
 | **Tracking Filter** | `K` key | Hand Tracking | Cycles `1-Euro` $\to$ `Deadband` $\to$ `EMA` $\to$ `Raw` |
 | **Camera Settings** | `P` key | Camera | Opens native camera properties dialog (Windows DirectShow only) |
 | **Reset State** | Hold `[RESET]` button (0.7s) or `r` / `R` | Application | Resets state machine to `IDLE` |
@@ -232,7 +252,10 @@ gesture-ar-instruments/
 │   └── USER_STUDY_PROTOCOL.md   # Formal 24-participant usability evaluation methodology
 ├── models/
 │   ├── __init__.py              # Models package initializer
-│   └── hand_landmarker.task     # Bundled Google MediaPipe Tasks HandLandmarker model
+│   ├── hand_landmarker.task     # Bundled Google MediaPipe Tasks HandLandmarker model
+│   ├── MODEL_PROVENANCE.md      # Cryptographic provenance, upstream URL & SHA-256
+│   ├── NOTICE                   # Third-party attribution notice (Google LLC)
+│   └── LICENSE.Apache-2.0       # Upstream Apache License, Version 2.0
 ├── tests/
 │   ├── test_async_tracking.py   # Asynchronous timestamping & kinematic extrapolation
 │   ├── test_audio.py            # Synthesis engine, voicings, polyphony caps
@@ -263,6 +286,7 @@ gesture-ar-instruments/
 
 ---
 
-## 📄 License
+## 📄 License & Third-Party Attributions
 
-Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
+- **Application Code:** Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
+- **Bundled Model Artifact:** The pre-trained MediaPipe Hand Landmarker model artifact (`models/hand_landmarker.task`) is developed by Google LLC and distributed under the Apache License, Version 2.0. See [`models/MODEL_PROVENANCE.md`](models/MODEL_PROVENANCE.md), [`models/NOTICE`](models/NOTICE), and [`models/LICENSE.Apache-2.0`](models/LICENSE.Apache-2.0) for full upstream provenance and attribution details.

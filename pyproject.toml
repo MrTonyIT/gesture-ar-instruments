@@ -61,7 +61,7 @@ py-modules = [
 packages = ["models"]
 
 [tool.setuptools.package-data]
-"models" = ["*.task"]
+"models" = ["*.task", "*.md", "LICENSE*", "NOTICE*"]
 
 [project.scripts]
 gesture-ar = "main:main"
