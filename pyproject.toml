@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "gesture-ar-instruments"
 version = "1.0.0"
 description = "Real-Time Spatial AR Musical Instruments (Air Guitar & Piano) with MediaPipe Hand Tracking and Procedural Synthesizer"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.12"
 license = {text = "MIT"}
 authors = [
     {name = "MrTonyIT"}
@@ -24,26 +24,44 @@ keywords = [
     "human-computer-interaction"
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
     "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent"
 ]
 dependencies = [
-    "opencv-python>=4.8.0",
-    "mediapipe>=0.10.0,<0.10.15",
-    "numpy>=1.24.0",
-    "sounddevice>=0.4.6",
-    "scipy>=1.10.0"
+    "opencv-contrib-python==4.10.0.84",
+    "mediapipe==0.10.35",
+    "numpy==1.26.4",
+    "sounddevice==0.5.1"
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0"
+]
+
+[tool.setuptools]
+py-modules = [
+    "audio_engine",
+    "benchmark_filters",
+    "geometry",
+    "gesture_engine",
+    "instruments",
+    "main",
+    "vision_tracker"
+]
+packages = ["models"]
+
+[tool.setuptools.package-data]
+"models" = ["*.task", "*.md", "LICENSE*", "NOTICE*"]
 
 [project.scripts]
 gesture-ar = "main:main"
@@ -52,3 +70,19 @@ gesture-ar = "main:main"
 Homepage = "https://github.com/MrTonyIT/gesture-ar-instruments"
 Repository = "https://github.com/MrTonyIT/gesture-ar-instruments.git"
 "Bug Tracker" = "https://github.com/MrTonyIT/gesture-ar-instruments/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:sounddevice.*",
+    "ignore::DeprecationWarning:numpy.*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+

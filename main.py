@@ -4,27 +4,34 @@ main.py
 Main Orchestrator & Cyber HUD Visualization for Gesture AR Instruments.
 
 Integrates:
-- ThreadedCamera: Non-blocking 60 FPS video capture.
-- HandTracker: MediaPipe hand landmarks with mirrored coordinates and EMA smoothing.
+- ThreadedCamera: Non-blocking video capture thread with sequence IDs and timestamps.
+- AsyncHandTracker: Dedicated worker thread with pluggable BaseFilter (OneEuroFilter default)
+  and predictive kinematic dead-reckoning extrapolation targeting 60 FPS interaction.
 - GestureEngine: Spatial gestures, state transitions, progress timers, and reset zones.
-- Instruments: Virtual Piano (2 octaves, black-key priority, velocity gating)
-               and Virtual Guitar (chord fretboard, 2D line-segment strumming).
-- AudioEngine: Non-blocking real-time procedural additive and damped harmonic sound.
+- Instruments: Virtual Piano (2 octaves, black-key priority, downward velocity gating, hover suppression)
+               and Virtual Guitar (authentic 9 chords, muted string suppression, 2D line strumming).
+- AudioEngine: Non-blocking procedural additive and plucked string synthesis with soft limiting.
 
 Controls:
-- Both Hands 'L' Shape: Spawn & Lock Piano (hold 1.2s).
-- Left Hand 'O' Pinch: Spawn & Lock Guitar (hold 1.2s).
-- Both Wrists to Top 10%: Global Reset to IDLE.
-- Press 'q' or ESC: Graceful exit.
+- Both Hands 'L' Shape: Spawn & Lock Piano to desk surface (hold 1.2s).
+- Thumb & Index Touch + Pull Apart: Sculpt virtual guitar neck rails; sculpt soundbox and snap together.
+- Fretboard Hotkeys 1-9 or C, G, D, A, E, F: Select authentic guitar chords.
+- F3, Tab, or ` : Toggle Developer Diagnostics HUD.
+- V: Cycle Visual Quality Profiles (HIGH, BALANCED, LOW).
+- K: Cycle Hand Tracking Filters (1-Euro -> Deadband -> EMA -> Raw).
+- Hold [RESET] Button (0.7s) or press 'r': Reset to IDLE.
+- Hold [EXIT] Button (3.0s), 'q', or ESC: Graceful exit.
 """
 
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import logging
 import sys
 import time
-from typing import List, Optional, Tuple
+from types import MappingProxyType
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -32,7 +39,7 @@ import numpy as np
 from audio_engine import AudioEngine
 from gesture_engine import AppState, GestureEngine
 from instruments import Guitar, Piano
-from vision_tracker import AsyncHandTracker, HandData, HandTracker, ThreadedCamera
+from vision_tracker import AsyncHandTracker, HandData, ThreadedCamera
 
 # Configure structured logging
 logging.basicConfig(
@@ -41,6 +48,32 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("MainApp")
+
+# Module-level immutable guitar keyboard chord mapping (Key code -> Chord Name)
+GUITAR_KEY_CHORD_MAP: MappingProxyType[int, str] = MappingProxyType({
+    ord("1"): "C", ord("c"): "C", ord("C"): "C",
+    ord("2"): "G", ord("g"): "G", ord("G"): "G",
+    ord("3"): "D", ord("d"): "D", ord("D"): "D",
+    ord("4"): "A", ord("a"): "A", ord("A"): "A",
+    ord("5"): "E", ord("e"): "E", ord("E"): "E",
+    ord("6"): "Am",
+    ord("7"): "Em",
+    ord("8"): "Dm",
+    ord("9"): "F", ord("f"): "F", ord("F"): "F",
+})
+
+# Filter cycle keyboard shortcuts
+FILTER_CYCLE_KEYS: Tuple[int, ...] = (ord("k"), ord("K"))
+
+# Intended backend-specific special full key codes (cv2.waitKeyEx)
+ESCAPE_FULL_KEYS: Tuple[int, ...] = (27, 0xFF1B)
+TAB_FULL_KEYS: Tuple[int, ...] = (9, 0xFF09)
+
+# Legitimate F3 platform-specific raw key codes from OpenCV waitKeyEx
+# Windows: 0x720000 (VK_F3 << 16); Linux/X11: 65472 (0xFFC0)
+# NOTE: ASCII 114 is deliberately excluded because 114 == ord("r")
+F3_FULL_KEYS: Tuple[int, ...] = (0x720000, 65472)
+F3_RAW_KEYS: Tuple[int, ...] = F3_FULL_KEYS
 
 # MediaPipe Hand Skeleton connections (Pairs of landmark indices)
 HAND_CONNECTIONS = [
@@ -54,38 +87,93 @@ HAND_CONNECTIONS = [
 ]
 
 
+
+@dataclass(frozen=True)
+class QualityProfileConfig:
+    """Explicit performance and visual quality profile configuration."""
+
+    name: str
+    max_particles: int
+    enable_glow_effects: bool
+    enable_shockwave_flash: bool
+    oscilloscope_points: int
+
+
+QUALITY_PROFILES: Dict[str, QualityProfileConfig] = {
+    "HIGH": QualityProfileConfig(
+        name="HIGH",
+        max_particles=18,
+        enable_glow_effects=True,
+        enable_shockwave_flash=True,
+        oscilloscope_points=32,
+    ),
+    "BALANCED": QualityProfileConfig(
+        name="BALANCED",
+        max_particles=8,
+        enable_glow_effects=True,
+        enable_shockwave_flash=False,
+        oscilloscope_points=24,
+    ),
+    "LOW": QualityProfileConfig(
+        name="LOW",
+        max_particles=0,
+        enable_glow_effects=False,
+        enable_shockwave_flash=False,
+        oscilloscope_points=12,
+    ),
+}
+
+
 class GestureARApp:
-    """Production AR Instruments Suite Orchestrator."""
+    """AR Instruments Suite Orchestrator."""
 
     def __init__(
         self,
         camera_id: int = 0,
         width: int = 1920,
         height: int = 1080,
+        audio_engine: Optional[AudioEngine] = None,
+        camera: Optional[ThreadedCamera] = None,
+        tracker: Optional[AsyncHandTracker] = None,
+        start_threads: bool = True,
+        quality_profile: str = "HIGH",
+        init_mediapipe: bool = True,
+        camera_backend: str = "auto",
     ) -> None:
         self.width = width
         self.height = height
 
-        # 1. Initialize Subsystems
-        logger.info("Initializing Audio Engine...")
-        self.audio_engine = AudioEngine(sample_rate=44100, block_size=256)
-        self.audio_engine.start()
+        # 1. Initialize Subsystems (supports dependency injection for headless testing)
+        if audio_engine is not None:
+            self.audio_engine = audio_engine
+        else:
+            logger.info("Initializing Audio Engine...")
+            self.audio_engine = AudioEngine(sample_rate=44100, block_size=256)
+            if start_threads:
+                self.audio_engine.start()
 
-        logger.info("Initializing Threaded Camera on source %s (Target: %dx%d)...", camera_id, self.width, self.height)
-        self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height)
-        self.camera.start()
+        if camera is not None:
+            self.camera = camera
+        else:
+            logger.info("Initializing Threaded Camera on source %s (Target: %dx%d, backend: %s)...", camera_id, self.width, self.height, camera_backend)
+            self.camera = ThreadedCamera(src=camera_id, width=self.width, height=self.height, backend=camera_backend)
+            if start_threads:
+                self.camera.start()
 
-        logger.info("Initializing Asynchronous AI Hand Tracker Worker...")
-        self.async_tracker = AsyncHandTracker(
-            camera=self.camera,
-            max_num_hands=2,
-            min_detection_confidence=0.55,
-            min_tracking_confidence=0.50,
-            ema_alpha=0.65,
-            filter_mode="one_euro",
-            model_complexity=1,
-        )
-        self.async_tracker.start()
+        if tracker is not None:
+            self.async_tracker = tracker
+        else:
+            logger.info("Initializing Asynchronous AI Hand Tracker Worker...")
+            self.async_tracker = AsyncHandTracker(
+                camera=self.camera,
+                max_num_hands=2,
+                ema_alpha=0.65,
+                filter_mode="one_euro",
+                tracking_profile="STABLE",
+                init_mediapipe=init_mediapipe,
+            )
+            if start_threads:
+                self.async_tracker.start()
         # Maintain hand_tracker alias for seamless compatibility
         self.hand_tracker = self.async_tracker
 
@@ -96,6 +184,18 @@ class GestureARApp:
         self.piano: Optional[Piano] = None
         self.guitar: Optional[Guitar] = None
 
+        # Telemetry & Developer Diagnostics HUD
+        self.show_diagnostics: bool = False
+        self.set_quality_profile(quality_profile)
+        self.telemetry = {
+            "cam_ms": 0.0,
+            "track_ms": 0.0,
+            "gest_ms": 0.0,
+            "inst_ms": 0.0,
+            "rend_ms": 0.0,
+            "total_ms": 0.0,
+        }
+
         # FPS metrics
         self.prev_frame_time = time.perf_counter()
         self.fps = 0.0
@@ -103,6 +203,142 @@ class GestureARApp:
         # Screen overflow auto-disappearance alert
         self.last_overflow_time: float = 0.0
         self.overflow_msg: str = ""
+
+    def _on_tracking_pipeline_changed(self) -> None:
+        """
+        Resets active instrument motion-collision state when an application-level
+        tracking pipeline switch occurs (filter mode, tracking profile, or reset).
+        Preserves currently selected chord and instrument state.
+        """
+        if hasattr(self, "piano") and self.piano is not None:
+            self.piano.reset_motion_state()
+        if hasattr(self, "guitar") and self.guitar is not None:
+            self.guitar.reset_motion_state()
+
+    def set_quality_profile(self, profile: str) -> None:
+        """Applies explicit visual quality profile (HIGH, BALANCED, LOW)."""
+        key = profile.upper()
+        if key not in QUALITY_PROFILES:
+            key = "HIGH"
+        self.quality_profile = key
+        self.quality_config = QUALITY_PROFILES[key]
+
+    def handle_key(self, raw_key: int) -> Optional[str]:
+        """
+        Deterministic keyboard event handler for GestureARApp without requiring GUI.
+        Eliminates arbitrary low-byte masking to prevent extended key collisions.
+
+        Args:
+            raw_key: Full integer key code returned by cv2.waitKeyEx (or -1 if no key).
+
+        Returns:
+            Dispatched action string (e.g. 'EXIT', 'RESET', 'DIAGNOSTICS', etc.) or None.
+        """
+        if raw_key < 0:
+            return None
+
+        # 1. Backend-specific explicit special key allowlists
+        if raw_key in ESCAPE_FULL_KEYS:
+            logger.info("Exit key pressed (%s).", raw_key)
+            return "EXIT"
+
+        if raw_key in F3_FULL_KEYS or raw_key in TAB_FULL_KEYS:
+            self.show_diagnostics = not self.show_diagnostics
+            logger.info("Diagnostics HUD toggled: %s", "ON" if self.show_diagnostics else "OFF")
+            return "DIAGNOSTICS"
+
+        # Reject any non-ASCII full key codes that are not in explicit special key allowlists
+        if raw_key > 0xFF:
+            return None
+
+        key = raw_key
+
+        # 2. Exit application (q/Q)
+        if key in (ord("q"), ord("Q")):
+            logger.info("Exit key pressed (%s).", raw_key)
+            return "EXIT"
+
+        # 3. Developer Diagnostics HUD (backtick=`/96)
+        if key == ord("`"):
+            self.show_diagnostics = not self.show_diagnostics
+            logger.info("Diagnostics HUD toggled: %s", "ON" if self.show_diagnostics else "OFF")
+            return "DIAGNOSTICS"
+
+        # 4. Manual Reset Shortcut (r/R) -> reset to IDLE
+        if key in (ord("r"), ord("R")):
+            self.gesture_engine.reset_to_idle()
+            self.piano = None
+            self.guitar = None
+            logger.info("Application state reset to IDLE via [R].")
+            return "RESET"
+
+        # 5. Visual Quality Profile (v/V)
+        if key in (ord("v"), ord("V")):
+            if self.quality_profile == "HIGH":
+                self.set_quality_profile("BALANCED")
+            elif self.quality_profile == "BALANCED":
+                self.set_quality_profile("LOW")
+            else:
+                self.set_quality_profile("HIGH")
+            logger.info("Visual Quality Profile switched to: %s", self.quality_profile)
+            return "QUALITY"
+
+        # 6. AI Tracking Profile Toggle (m/M): STABLE (0.65 conf) vs RESPONSIVE (0.50 conf)
+        if key in (ord("m"), ord("M")):
+            current_profile = getattr(self.async_tracker, "tracking_profile", "STABLE")
+            new_profile = "RESPONSIVE" if current_profile == "STABLE" else "STABLE"
+            changed = self.async_tracker.set_tracking_profile(new_profile)
+            if changed:
+                self._on_tracking_pipeline_changed()
+                actual_profile = getattr(self.async_tracker, "tracking_profile", new_profile)
+                mode_lbl = "STABLE (Stricter 0.65 Confidence)" if actual_profile == "STABLE" else "RESPONSIVE (Permissive 0.50 Confidence)"
+                logger.info("AI tracking profile switched to: %s", mode_lbl)
+                return "TRACKING_PROFILE"
+            else:
+                logger.warning("AI tracking profile switch to %s rejected or failed; active profile remains %s", new_profile, current_profile)
+                return "TRACKING_PROFILE_FAILED"
+
+        # 7. Hand Tracking Filter Mode Cycle (k/K)
+        if key in FILTER_CYCLE_KEYS:
+            cur_mode = self.hand_tracker.filter_mode.lower()
+            if cur_mode == "one_euro":
+                target_mode = "deadband"
+            elif cur_mode in ("deadband", "zero_lag"):
+                target_mode = "ema"
+            elif cur_mode == "ema":
+                target_mode = "raw"
+            else:
+                target_mode = "one_euro"
+            changed = self.async_tracker.set_filter_mode(target_mode)
+            if changed:
+                self._on_tracking_pipeline_changed()
+            logger.info("Hand tracking switched to %s", target_mode)
+            return "FILTER"
+
+        # 8. Hardware Camera Properties Dialog (p/P)
+        if key in (ord("p"), ord("P")):
+            logger.info("Requesting hardware camera properties dialog [P]...")
+            opened = self.camera.open_settings_dialog()
+            if not opened:
+                logger.info(
+                    "Camera settings dialog [P] unavailable. "
+                    "On Windows, launch with '--camera-backend dshow' to enable hardware camera controls."
+                )
+            return "CAMERA_SETTINGS"
+
+        # 9. Guitar Chord Selection (Keys 1-9, C, G, D, A, E, F)
+        if self.guitar is not None and key in GUITAR_KEY_CHORD_MAP:
+            ch = GUITAR_KEY_CHORD_MAP[key]
+            self.guitar.set_chord(ch)
+            logger.info("Guitar chord set to %s via keyboard hotkey", ch)
+            return "GUITAR_CHORD"
+
+        return None
+
+    def dispatch_key(self, raw_key: int) -> bool:
+        """Dispatches keyboard event; returns False if application should terminate, True otherwise."""
+        action = self.handle_key(raw_key)
+        return action != "EXIT"
 
     def run(self) -> None:
         """Main application lifecycle loop."""
@@ -117,10 +353,15 @@ class GestureARApp:
                 loop_start = time.perf_counter()
 
                 # 1. Grab raw frame from ThreadedCamera
+                t_cam_start = time.perf_counter()
                 ret, raw_bgr_frame = self.camera.read()
+                t_cam_end = time.perf_counter()
                 if not ret or raw_bgr_frame is None:
                     time.sleep(0.005)
                     continue
+
+                cam_time_ms = (t_cam_end - t_cam_start) * 1000.0
+                self.telemetry["cam_ms"] = 0.90 * self.telemetry["cam_ms"] + 0.10 * cam_time_ms
 
                 # Auto-detect camera resolution on first received frame
                 if not window_configured:
@@ -131,16 +372,23 @@ class GestureARApp:
                     logger.info("Window synchronized to native camera resolution: %dx%d", self.width, self.height)
 
                 # 2. Retrieve Latest Hand Tracking with Predictive Kinematic Dead-Reckoning
-                # Coordinates are predicted forward to current timestamp for 60-120 FPS buttery motion
+                t_track_start = time.perf_counter()
                 hands: List[HandData] = self.async_tracker.get_latest_hands(loop_start, extrapolate=True)
+                t_track_end = time.perf_counter()
+                track_time_ms = (t_track_end - t_track_start) * 1000.0
+                self.telemetry["track_ms"] = 0.90 * self.telemetry["track_ms"] + 0.10 * track_time_ms
 
                 # 3. Mirror display frame horizontally for mirror-like AR experience
                 display_frame = cv2.flip(raw_bgr_frame, 1)
 
                 # 4. Update Gesture State Machine
+                t_gest_start = time.perf_counter()
                 prev_state = self.gesture_engine.state
                 self.gesture_engine.update(hands, display_frame.shape)
                 cur_state = self.gesture_engine.state
+                t_gest_end = time.perf_counter()
+                gest_time_ms = (t_gest_end - t_gest_start) * 1000.0
+                self.telemetry["gest_ms"] = 0.90 * self.telemetry["gest_ms"] + 0.10 * gest_time_ms
 
                 # 4a. Trigger SFX for Sculpt & Fusion events & Reset & Lock Toggle
                 if (
@@ -161,9 +409,9 @@ class GestureARApp:
                     self.last_overflow_time = time.perf_counter()
                     self.overflow_msg = "GUITAR NECK EXCEEDED SCREEN BOUNDS! SHAPE AUTO-PURGED"
 
-                # 4b. Check Gesture-based Application Exit (Crossed hands 'X' held for 1.8s)
+                # 4b. Check Application Exit ([EXIT] button held for 3.0s)
                 if self.gesture_engine.should_exit:
-                    logger.info("Gesture Exit confirmed by user: Shutting down application cleanly.")
+                    logger.info("Application exit confirmed: Shutting down cleanly.")
                     break
 
                 # 5. Handle Instrument Transitions
@@ -185,65 +433,42 @@ class GestureARApp:
                         self.guitar = None
 
                 # 6. Update and Hit-Test Active Instrument
+                t_inst_start = time.perf_counter()
                 if cur_state == AppState.PIANO_ACTIVE and self.piano is not None:
                     self.piano.update(hands, display_frame.shape)
                 elif cur_state == AppState.GUITAR_ACTIVE and self.guitar is not None:
                     self.guitar.update(hands, display_frame.shape)
+                t_inst_end = time.perf_counter()
+                inst_time_ms = (t_inst_end - t_inst_start) * 1000.0
+                self.telemetry["inst_ms"] = 0.90 * self.telemetry["inst_ms"] + 0.10 * inst_time_ms
 
-                # 7. Render Cyber HUD Overlay
+                # 7. Render Cyber HUD Overlay & Diagnostics
+                t_rend_start = time.perf_counter()
                 self._render_hud(display_frame, hands)
+                if self.show_diagnostics:
+                    self._render_diagnostics_hud(display_frame)
+                t_rend_end = time.perf_counter()
+                rend_time_ms = (t_rend_end - t_rend_start) * 1000.0
+                self.telemetry["rend_ms"] = 0.90 * self.telemetry["rend_ms"] + 0.10 * rend_time_ms
 
-                # 8. Frame rate calculation
+                # 8. Render frame to window
+                cv2.imshow(window_name, display_frame)
+
+                # 9. Key Handling & OS Event Polling
+                raw_key = cv2.waitKeyEx(1)
+
+                # 10. Frame rate calculation & loop telemetry (measures complete pipeline including presentation)
                 now = time.perf_counter()
                 dt = now - self.prev_frame_time
                 self.prev_frame_time = now
                 if dt > 0:
                     current_fps = 1.0 / dt
                     self.fps = 0.9 * self.fps + 0.1 * current_fps
+                total_frame_ms = (now - loop_start) * 1000.0
+                self.telemetry["total_ms"] = 0.90 * self.telemetry["total_ms"] + 0.10 * total_frame_ms
 
-                # Render frame to window
-                cv2.imshow(window_name, display_frame)
-
-                # 9. Key Handling: Exit on 'q' or ESC (ASCII 27)
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), ord("Q"), 27):
-                    logger.info("Exit key pressed.")
+                if not self.dispatch_key(raw_key):
                     break
-                elif key in (ord("r"), ord("R")):
-                    # Manual reset shortcut
-                    self.gesture_engine.reset_to_idle()
-                    self.piano = None
-                    self.guitar = None
-                elif key in (ord("m"), ord("M")):
-                    # Toggle AI model complexity: ULTRA (1) vs HYPER-SPEED (0)
-                    new_mc = 0 if self.async_tracker.model_complexity == 1 else 1
-                    self.async_tracker.model_complexity = new_mc
-                    mode_lbl = "ULTRA (Model 1: High Precision)" if new_mc == 1 else "HYPER-SPEED (Model 0: Lowest Latency)"
-                    logger.info("AI tracking model switched to: %s", mode_lbl)
-                elif key in (ord("f"), ord("F")):
-                    # Cycle hand tracking filter mode: 1€ adaptive -> zero-lag deadband -> pure raw
-                    if self.hand_tracker.filter_mode == "one_euro":
-                        self.hand_tracker.filter_mode = "zero_lag"
-                        logger.info("Hand tracking switched to ZERO-LAG DEADBAND (0ms delay)")
-                    elif self.hand_tracker.filter_mode == "zero_lag":
-                        self.hand_tracker.filter_mode = "raw"
-                        logger.info("Hand tracking switched to PURE RAW (100% direct MediaPipe)")
-                    else:
-                        self.hand_tracker.filter_mode = "one_euro"
-                        logger.info("Hand tracking switched to 1€ ADAPTIVE FILTER (Cinema-smooth & jitter-free)")
-                elif key in (ord("p"), ord("P")):
-                    # Open native hardware camera properties dialog (50/60Hz anti-flicker, exposure, gain)
-                    logger.info("Requesting hardware camera properties dialog [P]...")
-                    self.camera.open_settings_dialog()
-                elif self.guitar is not None:
-                    if key in (ord("1"), ord("c"), ord("C")):
-                        self.guitar.active_chord = "C"
-                    elif key in (ord("2"), ord("g"), ord("G")):
-                        self.guitar.active_chord = "G"
-                    elif key in (ord("3"), ord("a"), ord("A")):
-                        self.guitar.active_chord = "Am"
-                    elif key in (ord("4"), ord("e"), ord("E")):
-                        self.guitar.active_chord = "Em"
 
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt caught.")
@@ -285,12 +510,12 @@ class GestureARApp:
 
             # Holographic guidance for sculpting and assembling guitar
             if self.gesture_engine.is_sculpt_locked:
-                cv2.putText(overlay_guide, "[🔒 SCULPT CREATION LOCKED - HAND TRACKING RIG STILL ACTIVE]", (int(0.18 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 180, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[LOCKED] SCULPT CREATION LOCKED - HAND TRACKING RIG STILL ACTIVE", (int(0.18 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 180, 255), 1, cv2.LINE_AA)
                 cv2.putText(overlay_guide, "[HOLD [L] BUTTON (1s) AT TOP-RIGHT TO UNLOCK CREATION]", (int(0.24 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1, cv2.LINE_AA)
             else:
-                cv2.putText(overlay_guide, "[🖐️ PINCH THUMB & INDEX (BOTH HANDS) TO SCULPT NECK]", (int(0.06 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 200, 180), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[🖐️ RIGHT HAND PINCH & EXPAND: SOUNDBOX]", (int(0.56 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 50, 180), 1, cv2.LINE_AA)
-                cv2.putText(overlay_guide, "[⚡ BRING BOTH PARTS CLOSE (<145px) TO ASSEMBLE GUITAR ⚡]", (int(0.28 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[PINCH] PINCH THUMB & INDEX (BOTH HANDS) TO SCULPT NECK", (int(0.06 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 200, 180), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[EXPAND] RIGHT HAND PINCH & EXPAND: SOUNDBOX", (int(0.56 * w), int(0.48 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 50, 180), 1, cv2.LINE_AA)
+                cv2.putText(overlay_guide, "[FUSION] BRING BOTH PARTS CLOSE (<145px) TO ASSEMBLE GUITAR", (int(0.24 * w), int(0.54 * h)), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 220, 255), 1, cv2.LINE_AA)
             cv2.addWeighted(overlay_guide, 0.60, frame, 0.40, 0, frame)
 
         # 3. Render Circular Progress Bars for Gesture Spawning, Reset, Lock, and Exit
@@ -340,10 +565,11 @@ class GestureARApp:
             pts = hand.landmarks_px.astype(int)
 
             # 4a. Translucent Cyber Palm Mesh (Adds smooth 3D body & volume to hand rig)
-            palm_poly = pts[[0, 1, 5, 9, 13, 17], :2]
-            overlay_palm = frame.copy()
-            cv2.fillPoly(overlay_palm, [palm_poly], glow_color)
-            cv2.addWeighted(overlay_palm, 0.16, frame, 0.84, 0, frame)
+            if self.quality_config.enable_glow_effects:
+                palm_poly = pts[[0, 1, 5, 9, 13, 17], :2]
+                overlay_palm = frame.copy()
+                cv2.fillPoly(overlay_palm, [palm_poly], glow_color)
+                cv2.addWeighted(overlay_palm, 0.16, frame, 0.84, 0, frame)
 
             # 4b. Dual-layer cyber bones with natural anatomical tapering
             for idx1, idx2 in HAND_CONNECTIONS:
@@ -358,7 +584,8 @@ class GestureARApp:
                 else:
                     th_glow, th_core = 4, 2  # Intermediate phalanges
 
-                cv2.line(frame, pt1, pt2, glow_color, th_glow, cv2.LINE_AA)
+                if self.quality_config.enable_glow_effects:
+                    cv2.line(frame, pt1, pt2, glow_color, th_glow, cv2.LINE_AA)
                 cv2.line(frame, pt1, pt2, primary_color, th_core, cv2.LINE_AA)
                 cv2.line(frame, pt1, pt2, (255, 255, 255), 1, cv2.LINE_AA)
 
@@ -384,7 +611,7 @@ class GestureARApp:
 
             # 4d. Handedness Badge at Wrist
             wrist = tuple(pts[0, :2])
-            tag = f"[L] LEFT HAND" if is_left else f"[R] RIGHT HAND"
+            tag = "[L] LEFT HAND" if is_left else "[R] RIGHT HAND"
             bx, by = wrist[0] - 40, wrist[1] + 28
             cv2.rectangle(frame, (bx - 4, by - 14), (bx + 105, by + 6), (15, 12, 20), -1)
             cv2.rectangle(frame, (bx - 4, by - 14), (bx + 105, by + 6), primary_color, 1)
@@ -485,20 +712,29 @@ class GestureARApp:
             cv2.LINE_AA,
         )
 
-        # 4. Zone 3: Telemetry Capsule (Center) - Guaranteed Non-Overlapping Spacing
+        # 4. Zone 3: Telemetry Capsule (Center) - Non-Overlapping Spacing
         ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
-        model_tag = "ULTRA" if getattr(self.async_tracker, "model_complexity", 1) == 1 else "HYPER"
-        mode_tag = "1€" if self.hand_tracker.filter_mode == "one_euro" else ("0ms" if self.hand_tracker.filter_mode == "zero_lag" else "RAW")
+        model_tag = getattr(self.async_tracker, "tracking_profile", "STABLE")
+        filt_m = self.hand_tracker.filter_mode.lower()
+        if filt_m == "one_euro":
+            mode_tag = "1-EURO"
+        elif filt_m in ("deadband", "zero_lag"):
+            mode_tag = "DEADBAND"
+        elif filt_m == "ema":
+            mode_tag = "EMA"
+        else:
+            mode_tag = "RAW"
+        q_tag = self.quality_profile[:3]
 
         btn_zone_start = w - 515
         space_left = sx2 + 18
         space_right = btn_zone_start - 16
         avail_w = space_right - space_left
 
-        if avail_w >= 380:
-            fps_text = f"FPS: {self.fps:.1f} | AI: {ai_fps:.1f} ({model_tag}) | RIG: {mode_tag} | HANDS: {hand_count}"
+        if avail_w >= 410:
+            fps_text = f"FPS: {self.fps:.1f} | AI: {ai_fps:.1f} ({model_tag}) | {mode_tag} | Q:{q_tag} | H:{hand_count}"
         else:
-            fps_text = f"{self.fps:.0f}FPS | AI:{ai_fps:.0f}({model_tag}) | {mode_tag} | H:{hand_count}"
+            fps_text = f"{self.fps:.0f}FPS | AI:{ai_fps:.0f} | {mode_tag} | H:{hand_count}"
 
         telem_size = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)[0]
         telem_w = telem_size[0]
@@ -640,7 +876,7 @@ class GestureARApp:
             cv2.putText(frame, btn_text, (bx1 + 8, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (255, 255, 255), 2, cv2.LINE_AA)
             cv2.circle(frame, (bx2 - 12, by1 + 12), 4, (0, 255, 255), -1, cv2.LINE_AA)
         else:
-            cv2.putText(frame, "[X] EXIT (3s)", (bx1 + 24, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 180, 220), 1, cv2.LINE_AA)
+            cv2.putText(frame, "[EXIT] HOLD 3s", (bx1 + 18, by1 + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 180, 220), 1, cv2.LINE_AA)
 
         # 6. Context-Aware English Instruction Banner (Bottom Dock)
         instruction_map = {
@@ -672,11 +908,103 @@ class GestureARApp:
         )
         cv2.putText(
             frame,
-            "Quick: [L] LOCK | [R] RESET | [M] AI | [F] RIG | [P] CAM | [X] EXIT",
-            (w - 495, h - 7),
+            "Quick: [L] LOCK | [R] RESET | [M] AI | [K] RIG | [V] QUAL | [F3/TAB] DIAG | [P] CAM | [Q/ESC] EXIT",
+            (max(10, w - 575), h - 7),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.36,
+            0.35,
             (0, 220, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _render_diagnostics_hud(self, frame: np.ndarray) -> None:
+        """Renders developer diagnostics overlay with pipeline timing breakdown."""
+        h, w = frame.shape[:2]
+        panel_w = 430
+        panel_h = 240
+        px1 = 20
+        py1 = h - panel_h - 36
+        px2 = px1 + panel_w
+        py2 = py1 + panel_h
+
+        roi = frame[py1:py2, px1:px2]
+        if roi.size > 0:
+            overlay = np.full_like(roi, (14, 12, 20), dtype=np.uint8)
+            cv2.addWeighted(overlay, 0.88, roi, 0.12, 0, roi)
+            frame[py1:py2, px1:px2] = roi
+
+        cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 240, 255), 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (px1, py1), (px2, py1 + 24), (25, 20, 36), -1)
+        cv2.line(frame, (px1, py1 + 24), (px2, py1 + 24), (0, 240, 255), 1, cv2.LINE_AA)
+
+        cv2.putText(
+            frame,
+            "// DIAGNOSTICS & TELEMETRY [F3 / TAB]",
+            (px1 + 10, py1 + 17),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 255, 230),
+            1,
+            cv2.LINE_AA,
+        )
+
+        ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
+        ai_lat = getattr(self.async_tracker, "inference_latency_ms", 0.0)
+        stale_frames = getattr(self.async_tracker, "stale_frames_skipped", 0)
+        voices = self.audio_engine.get_active_voice_count()
+        peak = getattr(self.audio_engine, "current_peak", 0.0) * 100.0
+
+        lines = [
+            f"Render Loop FPS: {self.fps:.1f} FPS  (Total: {self.telemetry['total_ms']:.1f} ms)",
+            f"Camera HW FPS:   {self.camera.camera_fps:.1f} FPS  (Snapshot Access: {self.telemetry['cam_ms']:.1f} ms)",
+            f"AI Inference:    {ai_fps:.1f} FPS  (Lat: {ai_lat:.1f} ms, Stale Skip: {stale_frames})",
+            f"Active Pipeline: Gesture {self.telemetry['gest_ms']:.1f}ms | Render {self.telemetry['rend_ms']:.1f}ms",
+            f"Audio Bus:       {voices} active voices | Peak: {peak:.1f}% (Soft Limiter: Active)",
+            f"Engine Config:   Filter={self.hand_tracker.filter_mode.upper()} | Profile={getattr(self.hand_tracker, 'tracking_profile', 'STABLE')} | Quality={self.quality_profile}",
+        ]
+
+        for idx, line in enumerate(lines):
+            y_text = py1 + 46 + idx * 22
+            cv2.putText(frame, line, (px1 + 12, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (220, 225, 240), 1, cv2.LINE_AA)
+
+        # Proportional Timing Bar
+        bar_x = px1 + 12
+        bar_y = py2 - 34
+        bar_w = panel_w - 24
+        bar_h = 14
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (35, 30, 45), -1)
+
+        t_total = max(1.0, self.telemetry["total_ms"])
+        w_cam = int((self.telemetry["cam_ms"] / t_total) * bar_w)
+        w_ai = int((self.telemetry["track_ms"] / t_total) * bar_w)
+        w_gest = int((self.telemetry["gest_ms"] / t_total) * bar_w)
+        w_rend = int((self.telemetry["rend_ms"] / t_total) * bar_w)
+
+        cur_bx = bar_x
+        # Cam segment (Cyan)
+        if w_cam > 0:
+            cv2.rectangle(frame, (cur_bx, bar_y), (min(bar_x + bar_w, cur_bx + w_cam), bar_y + bar_h), (0, 220, 255), -1)
+            cur_bx += w_cam
+        # Track snapshot segment (Magenta)
+        if w_ai > 0:
+            cv2.rectangle(frame, (cur_bx, bar_y), (min(bar_x + bar_w, cur_bx + w_ai), bar_y + bar_h), (255, 0, 220), -1)
+            cur_bx += w_ai
+        # Gesture segment (Yellow)
+        if w_gest > 0:
+            cv2.rectangle(frame, (cur_bx, bar_y), (min(bar_x + bar_w, cur_bx + w_gest), bar_y + bar_h), (0, 220, 255), -1)
+            cur_bx += w_gest
+        # Render segment (Green)
+        if w_rend > 0:
+            cv2.rectangle(frame, (cur_bx, bar_y), (min(bar_x + bar_w, cur_bx + w_rend), bar_y + bar_h), (0, 255, 140), -1)
+
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (0, 240, 255), 1, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            "Cam(Cyan) | Snap(Mag) | Gest(Yel) | Rend(Grn)",
+            (bar_x, py2 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.32,
+            (160, 180, 200),
             1,
             cv2.LINE_AA,
         )
@@ -728,7 +1056,7 @@ class GestureARApp:
         cv2.line(frame, (x1, y1), (x1, y1 + corner_len), color, thick)
         # Top-Right
         cv2.line(frame, (x2, y1), (x2 - corner_len, y1), color, thick)
-        cv2.line(frame, (x2, y1), (x2 - corner_len, y1), color, thick)
+        cv2.line(frame, (x2, y1), (x2, y1 + corner_len), color, thick)
         # Bottom-Left
         cv2.line(frame, (x1, y2), (x1 + corner_len, y2), color, thick)
         cv2.line(frame, (x1, y2), (x1, y2 - corner_len), color, thick)
@@ -816,12 +1144,12 @@ class GestureARApp:
                         fx, fy = int((p4[0] + p8[0]) / 2), int((p4[1] + p8[1]) / 2)
                         cv2.line(frame, (p4[0], p4[1]), (p8[0], p8[1]), (0, 200, 255), 1, cv2.LINE_AA)
                         cv2.circle(frame, (fx, fy), 6, (0, 255, 255), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "✌️ DUAL-TOUCH", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "[DUAL-TOUCH]", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1, cv2.LINE_AA)
                         break
 
             # Dynamic Glassmorphic Status Badge
             if is_dragging:
-                badge = "[ ✌️ DUAL-TOUCH: DRAGGING SOUNDBOX ]"
+                badge = "[ DUAL-TOUCH: DRAGGING SOUNDBOX ]"
             elif is_locked:
                 badge = "[ SOUNDBOX LOCKED: TOUCH THUMB & INDEX TO DRAG ]"
             elif ge.soundbox_hold_progress > 0.0:
@@ -842,7 +1170,7 @@ class GestureARApp:
             cv2.rectangle(frame, (bx - 4, by - 16), (bx + text_size[0] + 8, by + 6), col_primary, 1, cv2.LINE_AA)
             cv2.putText(frame, badge, (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.40, col_primary, 1, cv2.LINE_AA)
 
-        # 2. Both Hands: Rectangle / Fretboard & Neck (Cần đàn)
+        # 2. Both Hands: Rectangle / Fretboard & Neck (Can dan)
         if ge._neck_touch_primed and not ge.neck_sculpted and ge.neck_progress <= 0.05:
             # Two hands just touched! Show glowing contact point
             tx, ty = ge._neck_touch_center
@@ -851,7 +1179,7 @@ class GestureARApp:
             cv2.circle(frame, (tx, ty), 6, (255, 255, 255), -1, cv2.LINE_AA)
             cv2.putText(
                 frame,
-                "✨ CONTACT DETECTED! PULL APART TO SCULPT NECK ✨",
+                ">> CONTACT DETECTED! PULL APART TO SCULPT NECK <<",
                 (max(20, tx - 190), max(30, ty - 26)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.46,
@@ -948,12 +1276,12 @@ class GestureARApp:
                         fx, fy = int((p4[0] + p8[0]) / 2), int((p4[1] + p8[1]) / 2)
                         cv2.line(frame, (p4[0], p4[1]), (p8[0], p8[1]), (100, 255, 180), 1, cv2.LINE_AA)
                         cv2.circle(frame, (fx, fy), 6, (50, 255, 200), -1, cv2.LINE_AA)
-                        cv2.putText(frame, "✌️ DUAL-TOUCH", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (50, 255, 200), 1, cv2.LINE_AA)
+                        cv2.putText(frame, "[DUAL-TOUCH]", (fx - 46, fy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (50, 255, 200), 1, cv2.LINE_AA)
                         break
 
             # Dynamic Glassmorphic Status Badge
             if is_dragging:
-                badge = "[ ✌️ DUAL-TOUCH: DRAGGING NECK ]"
+                badge = "[ DUAL-TOUCH: DRAGGING NECK ]"
             elif is_locked:
                 badge = "[ NECK LOCKED: TOUCH THUMB & INDEX TO DRAG ]"
             elif ge.neck_hold_progress > 0.0:
@@ -976,7 +1304,7 @@ class GestureARApp:
 
         # Screen Overflow Disappearance Visual Alert
         if time.perf_counter() - self.last_overflow_time < 2.0:
-            banner = f"⚠️ {self.overflow_msg} ⚠️"
+            banner = f"! OVERFLOW ! {self.overflow_msg} ! OVERFLOW !"
             t_sz = cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)[0]
             ox = max(20, (frame.shape[1] - t_sz[0]) // 2)
             oy = int(frame.shape[0] * 0.42)
@@ -1001,7 +1329,7 @@ class GestureARApp:
             hud_y = 105
             cv2.putText(
                 frame,
-                f"⚡ BRING SHAPES CLOSE (<145px) TO ASSEMBLE! (DISTANCE: {d_px}px)",
+                f">> BRING SHAPES CLOSE (<145px) TO ASSEMBLE! (DISTANCE: {d_px}px) <<",
                 (frame.shape[1] // 2 - 320, hud_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -1058,16 +1386,17 @@ class GestureARApp:
         cv2.circle(frame, (cx, cy), max(2, radius - 32), (255, 255, 255), 2, cv2.LINE_AA)
 
         # 2. Radiating energy particles
-        num_sparks = 18
-        for angle in np.linspace(0, 2 * np.pi, num_sparks)[:-1]:
-            dist_p = radius * 1.12
-            px = int(cx + dist_p * np.cos(angle))
-            py = int(cy + dist_p * np.sin(angle))
-            if 0 <= px < w and 0 <= py < h:
-                cv2.circle(frame, (px, py), 4, (0, 255, 255), -1, cv2.LINE_AA)
+        num_sparks = self.quality_config.max_particles
+        if num_sparks > 0:
+            for angle in np.linspace(0, 2 * np.pi, num_sparks)[:-1]:
+                dist_p = radius * 1.12
+                px = int(cx + dist_p * np.cos(angle))
+                py = int(cy + dist_p * np.sin(angle))
+                if 0 <= px < w and 0 <= py < h:
+                    cv2.circle(frame, (px, py), 4, (0, 255, 255), -1, cv2.LINE_AA)
 
         # 3. Screen flash on initial impact
-        if progress < 0.35:
+        if self.quality_config.enable_shockwave_flash and progress < 0.35:
             alpha_flash = float(0.35 * (1.0 - progress / 0.35))
             flash_overlay = frame.copy()
             flash_overlay[:] = (200, 240, 255)
@@ -1076,7 +1405,7 @@ class GestureARApp:
         # 4. Success text
         cv2.putText(
             frame,
-            "⚡ SNAP FUSION! GUITAR ASSEMBLED SUCCESSFULLY! ⚡",
+            ">> SNAP FUSION! GUITAR ASSEMBLED SUCCESSFULLY! <<",
             (w // 2 - 300, min(h - 80, cy - radius - 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -1103,7 +1432,7 @@ class GestureARApp:
 
         # 2. Animated harmonic waveform points
         now_t = time.perf_counter()
-        num_pts = 24
+        num_pts = getattr(self.quality_config, "oscilloscope_points", 24)
         mid_y = y + h // 2
         pts = []
         for i in range(num_pts):
@@ -1141,7 +1470,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-id", type=int, default=0, help="Webcam device index (default: 0)")
     parser.add_argument("--width", type=int, default=1920, help="Display frame width (default: 1920)")
     parser.add_argument("--height", type=int, default=1080, help="Display frame height (default: 1080)")
-    return parser.parse_args()
+    parser.add_argument(
+        "--camera-backend",
+        choices=["auto", "dshow", "msmf"],
+        default="auto",
+        help="Camera capture backend (auto, dshow, msmf). Note: dshow and msmf are Windows-only.",
+    )
+    args = parser.parse_args()
+    if sys.platform != "win32" and args.camera_backend in ("dshow", "msmf"):
+        parser.error(f"--camera-backend '{args.camera_backend}' is only supported on Windows platforms.")
+    return args
 
 
 def main() -> None:
@@ -1150,6 +1488,7 @@ def main() -> None:
         camera_id=args.camera_id,
         width=args.width,
         height=args.height,
+        camera_backend=args.camera_backend,
     )
     app.run()
 

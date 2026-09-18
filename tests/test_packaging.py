@@ -1,0 +1,139 @@
+"""
+tests/test_packaging.py
+=======================
+Unit tests for Python packaging, setuptools metadata, flat-layout module discovery,
+and entry point CLI execution.
+"""
+
+import importlib.metadata
+import subprocess
+import sys
+from pathlib import Path
+
+
+def test_pyproject_flat_layout_modules_declared():
+    """Verifies that pyproject.toml explicitly lists all top-level modules to avoid setuptools errors."""
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject_path = repo_root / "pyproject.toml"
+    assert pyproject_path.exists(), "pyproject.toml must exist at repo root"
+
+    text = pyproject_path.read_text(encoding="utf-8")
+    assert "[tool.setuptools]" in text
+    assert "py-modules" in text
+
+    expected_modules = [
+        "main",
+        "vision_tracker",
+        "gesture_engine",
+        "instruments",
+        "audio_engine",
+        "geometry",
+        "benchmark_filters",
+    ]
+    for mod in expected_modules:
+        assert f'"{mod}"' in text or f"'{mod}'" in text, f"Module {mod} missing in pyproject.toml py-modules"
+    assert 'packages = ["models"]' in text
+    assert "[tool.setuptools.package-data]" in text
+
+
+def test_pyproject_dependencies():
+    """Verifies pyproject.toml dependencies: unified opencv-contrib-python, no unused scipy."""
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject_path = repo_root / "pyproject.toml"
+
+    text = pyproject_path.read_text(encoding="utf-8").lower()
+
+    assert "opencv-contrib-python" in text, "Must depend on opencv-contrib-python (single unified OpenCV wheel)"
+    assert "opencv-python>=" not in text and "opencv-python==" not in text, "Must not dual-declare opencv-python"
+    assert "scipy" not in text, "Unused scipy dependency must not be present"
+    assert "mediapipe" in text, "mediapipe dependency required"
+    assert "sounddevice" in text, "sounddevice dependency required"
+    assert "numpy" in text, "numpy dependency required"
+
+
+def test_cli_entry_point_help():
+    """Verifies main module executes --help cleanly without opening camera or audio hardware."""
+    res = subprocess.run(
+        [sys.executable, "-m", "main", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert res.returncode == 0, f"--help failed with code {res.returncode}: {res.stderr}"
+    assert "Gesture AR Instruments" in res.stdout
+    assert "--camera-id" in res.stdout
+    assert "--width" in res.stdout
+    assert "--height" in res.stdout
+    assert "--camera-backend" in res.stdout
+
+
+def test_dependency_contract_consistency():
+    """
+    Verifies that pyproject.toml, requirements.txt, and constraints.txt all enforce
+    identical pinned runtime dependency versions.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    req_text = (repo_root / "requirements.txt").read_text(encoding="utf-8")
+    constraints_text = (repo_root / "constraints.txt").read_text(encoding="utf-8")
+
+    expected_pins = [
+        "opencv-contrib-python==4.10.0.84",
+        "mediapipe==0.10.35",
+        "numpy==1.26.4",
+        "sounddevice==0.5.1",
+    ]
+
+    for pin in expected_pins:
+        assert pin in pyproject_text, f"{pin} missing from pyproject.toml dependencies"
+        assert pin in req_text, f"{pin} missing from requirements.txt"
+        assert pin in constraints_text, f"{pin} missing from constraints.txt"
+
+
+def test_installed_package_metadata():
+    """Verifies installed wheel/package metadata when installed in the current environment."""
+    try:
+        dist = importlib.metadata.distribution("gesture-ar-instruments")
+    except importlib.metadata.PackageNotFoundError:
+        try:
+            dist = importlib.metadata.distribution("gesture_ar_instruments")
+        except importlib.metadata.PackageNotFoundError:
+            dist = None
+
+    if dist is not None:
+        assert dist.version == "1.0.0"
+        entry_points = [ep.name for ep in dist.entry_points if ep.group == "console_scripts"]
+        assert "gesture-ar" in entry_points, "Entry point gesture-ar must be registered"
+
+
+def test_pyproject_python_version_support():
+    """Verifies pyproject.toml aligns on supported Python versions: >=3.10,<3.12."""
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject_path = repo_root / "pyproject.toml"
+    text = pyproject_path.read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.10,<3.12"' in text
+    assert '"Programming Language :: Python :: 3.10"' in text
+    assert '"Programming Language :: Python :: 3.11"' in text
+
+
+def test_models_package_declarations_and_artifacts():
+    """Verifies that models package assets, provenance, notice, and license are present."""
+    repo_root = Path(__file__).resolve().parent.parent
+    models_dir = repo_root / "models"
+    assert (models_dir / "hand_landmarker.task").is_file()
+    assert (models_dir / "MODEL_PROVENANCE.md").is_file()
+    assert (models_dir / "NOTICE").is_file()
+    assert (models_dir / "LICENSE.Apache-2.0").is_file()
+
+    provenance_text = (models_dir / "MODEL_PROVENANCE.md").read_text(encoding="utf-8")
+    assert "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1" in provenance_text
+    assert "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" in provenance_text
+
+    notice_text = (models_dir / "NOTICE").read_text(encoding="utf-8")
+    assert "Google LLC" in notice_text
+    assert "Apache License, Version 2.0" in notice_text
+
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'packages = ["models"]' in pyproject_text
+    assert '"models" = ["*.task", "*.md", "LICENSE*", "NOTICE*"]' in pyproject_text
+

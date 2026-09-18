@@ -1,0 +1,21 @@
+# =============================================================================
+# CI-Verified Direct Dependency Constraints (Python 3.10 & 3.11)
+# =============================================================================
+# Verified direct dependency versions used by the GitHub Actions test
+# environment (Ubuntu 24.04 runner) to pass all unit tests, lint checks,
+# and empirical benchmark suites.
+#
+# Usage:
+#   pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+# =============================================================================
+
+# Core Runtime Dependencies
+opencv-contrib-python==4.10.0.84
+mediapipe==0.10.35
+numpy==1.26.4
+sounddevice==0.5.1
+
+# Development and Testing Tooling
+pytest==8.3.4
+ruff==0.9.9
+pip-audit==2.10.1

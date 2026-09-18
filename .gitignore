@@ -33,6 +33,7 @@ ENV/
 env/
 env.bak/
 venv.bak/
+fresh-env/
 
 # IDE & Editors
 .idea/

@@ -1,0 +1,5 @@
+# Flexible development and test tooling declarations
+# For CI-verified direct dependency constraints, install with: -c constraints.txt
+pytest>=7.0.0
+ruff>=0.1.0
+pip-audit>=2.10.1

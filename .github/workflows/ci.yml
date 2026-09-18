@@ -2,36 +2,192 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, research-upgrade-v2 ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, research-upgrade-v2 ]
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install system audio dependencies
+      - name: Install system audio and OpenGL dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libportaudio2 libsndfile1
+          sudo apt-get install -y libasound2-dev libportaudio2 libsndfile1 libgl1 libglib2.0-0 libgles2 libegl1
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
 
-      - name: Syntax and Import Verification
+      - name: Install Package and Test Entry Point
         run: |
-          python -c "import cv2, mediapipe, numpy, sounddevice, scipy; print('All core libraries imported successfully!')"
-          python -m compileall .
+          python -m pip install --no-deps .
+          cd /tmp
+          gesture-ar --help
+          python -c "import main; print('Installed location:', main.__file__)"
+
+      - name: Syntax and Bytecode Compilation
+        run: |
+          python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
+          python -m compileall audio_engine.py benchmark_filters.py gesture_engine.py instruments.py main.py vision_tracker.py tests
+
+      - name: Code Quality & Linting
+        run: |
+          python -m ruff check .
+
+      - name: Headless Test Suite
+        run: |
+          python -m pytest -v --tb=short
+
+      - name: Tracking Filter Benchmark Verification
+        run: |
+          python benchmark_filters.py
+          git diff --exit-code -- benchmarks/filter_benchmark_results.csv
+
+      - name: Isolated Fresh-Env Install, External Directory Smoke Test & Vulnerability Audit
+        run: |
+          RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
+          VENV_DIR="$RUNNER_TEMP/gesture-ar-fresh-env"
+          WORK_DIR="$RUNNER_TEMP/gesture-ar-external-workdir"
+          REPO_ROOT="$(pwd)"
+
+          rm -rf "$VENV_DIR" "$WORK_DIR"
+          python -m venv "$VENV_DIR"
+
+          "$VENV_DIR/bin/python" -m pip install --upgrade pip "setuptools>=83.0.0"
+          "$VENV_DIR/bin/pip" install .
+          "$VENV_DIR/bin/python" -m pip check
+
+          mkdir -p "$WORK_DIR"
+          cd "$WORK_DIR"
+
+          "$VENV_DIR/bin/gesture-ar" --help
+
+          "$VENV_DIR/bin/python" -c "import os, main; print('Resolved main.__file__:', main.__file__); mf = os.path.abspath(main.__file__); assert 'site-packages' in mf, f'Not in site-packages: {mf}'; assert not mf.startswith('$REPO_ROOT'), f'Inside repo checkout: {mf}'; assert mf.startswith('$VENV_DIR'), f'Not inside venv: {mf}'; print('Linux package resolution assertion passed: imported strictly from isolated site-packages!')"
+          "$VENV_DIR/bin/python" -c "import os, hashlib, numpy as np, mediapipe as mp; from mediapipe.tasks.python import vision as mp_vision; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.landmarker is not None, 'MediaPipe HandLandmarker failed to initialize'; model_p = tracker._resolve_model_path(); assert 'site-packages' in model_p, f'Model not from site-packages: {model_p}'; digest = hashlib.sha256(open(model_p, 'rb').read()).hexdigest(); assert digest == 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1', f'Bad installed model digest: {digest}'; blank = np.zeros((720, 1280, 3), dtype=np.uint8); res = tracker.process(blank, timestamp=1.0); assert isinstance(res, list); tracker.close(); print('Linux MediaPipe HandLandmarker real inference smoke passed in fresh env!')"
+
+          # PyPA Dependency Vulnerability Audit Gate
+          "$VENV_DIR/bin/pip" install pip-audit==2.10.1
+          "$VENV_DIR/bin/python" -m pip_audit
+
+  windows-release-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+
+      - name: Install Package and Test Entry Point
+        run: |
+          python -m pip install --no-deps .
+          gesture-ar --help
+          python -c "import main; print('Installed location:', main.__file__)"
+
+      - name: Windows RUN.bat Launcher Smoke Test
+        shell: cmd
+        run: |
+          RUN.bat --help
+
+      - name: Syntax and Bytecode Compilation
+        run: |
+          python -c "import cv2, mediapipe, numpy, sounddevice; print('Core libraries imported successfully!')"
+          python -m compileall audio_engine.py benchmark_filters.py gesture_engine.py instruments.py main.py vision_tracker.py tests
+
+      - name: Code Quality & Linting
+        run: |
+          python -m ruff check .
+
+      - name: Headless Test Suite
+        run: |
+          python -m pytest -v --tb=short
+
+      - name: Tracking Filter Benchmark Verification
+        run: |
+          python benchmark_filters.py
+          git diff --exit-code -- benchmarks/filter_benchmark_results.csv
+
+      - name: Windows Isolated Fresh-Env Install & External Directory Smoke Test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Invoke-Native {
+              param([scriptblock]$Cmd)
+              & $Cmd
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Native command failed with exit code $LASTEXITCODE"
+              }
+          }
+
+          $runnerTemp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+          $venvDir = Join-Path $runnerTemp "gesture-ar-fresh-env"
+          if (Test-Path $venvDir) {
+              Remove-Item -Recurse -Force $venvDir
+          }
+
+          $repoRoot = (Get-Location).Path
+          $env:REPO_ROOT = $repoRoot
+          $env:VENV_DIR = $venvDir
+
+          # 1. Create fresh venv outside the repository
+          Invoke-Native { python -m venv $venvDir }
+
+          $venvPython = Join-Path $venvDir "Scripts\python.exe"
+          $venvPip = Join-Path $venvDir "Scripts\pip.exe"
+          $venvGestureAr = Join-Path $venvDir "Scripts\gesture-ar.exe"
+
+          # 2. Upgrade pip and setuptools, install package
+          Invoke-Native { & $venvPython -m pip install --upgrade pip "setuptools>=83.0.0" }
+          Invoke-Native { & $venvPip install . }
+
+          # 3. Verify dependency tree integrity
+          Invoke-Native { & $venvPython -m pip check }
+
+          # 4. Change working directory to a separate temporary directory outside repo and venv
+          $workDir = Join-Path $runnerTemp "gesture-ar-external-workdir"
+          if (Test-Path $workDir) {
+              Remove-Item -Recurse -Force $workDir
+          }
+          New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+          Set-Location $workDir
+
+          # 5. Verify console script entry point
+          Invoke-Native { & $venvGestureAr --help }
+
+          # 6. Verify main.__file__ resolves from fresh venv site-packages and NOT from git checkout
+          Invoke-Native { & $venvPython -c "import os, sys, main; print('Resolved main.__file__:', main.__file__); mf = os.path.abspath(main.__file__).lower(); vf = os.path.abspath(os.environ['VENV_DIR']).lower(); rf = os.path.abspath(os.environ['REPO_ROOT']).lower(); site_pkg = os.path.join(vf, 'lib', 'site-packages').lower(); assert site_pkg in mf, f'main.__file__ ({main.__file__}) is not in site-packages ({site_pkg})'; assert not mf.startswith(rf), f'main.__file__ ({main.__file__}) is inside git checkout ({rf})!'; assert mf.startswith(vf), f'main.__file__ ({main.__file__}) is not inside venv ({vf})!'; print('Package resolution assertion passed: imported strictly from isolated site-packages!')" }
+
+          # 7. Verify MediaPipe HandLandmarker real inference smoke and model checksum in fresh environment
+          Invoke-Native { & $venvPython -c "import os, hashlib, numpy as np, mediapipe as mp; from mediapipe.tasks.python import vision as mp_vision; from vision_tracker import HandTracker; tracker = HandTracker(init_mediapipe=True); assert tracker.landmarker is not None, 'MediaPipe HandLandmarker failed to initialize'; model_p = tracker._resolve_model_path(); assert 'site-packages' in model_p.lower(), f'Model not from site-packages: {model_p}'; digest = hashlib.sha256(open(model_p, 'rb').read()).hexdigest(); assert digest == 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1', f'Bad installed model digest: {digest}'; blank = np.zeros((720, 1280, 3), dtype=np.uint8); res = tracker.process(blank, timestamp=1.0); assert isinstance(res, list); tracker.close(); print('Windows MediaPipe HandLandmarker real inference smoke passed in fresh env!')" }
+
+          Set-Location $repoRoot
+
+          # 8. Real Dependency Vulnerability Audit Gate
+          Invoke-Native { & $venvPip install pip-audit==2.10.1 }
+          Invoke-Native { & $venvPython -m pip_audit }
+
+
+
