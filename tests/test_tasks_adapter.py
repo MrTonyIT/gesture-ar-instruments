@@ -364,11 +364,11 @@ def test_hand_landmarker_options_inspection(monkeypatch):
     assert len(captured_options) == 1
     assert tracker.landmarker_creation_count == 1
 
-    # Real profile switch: landmarker recreated with 0.50 thresholds
+    # Real profile switch: landmarker recreated with 0.55/0.50 thresholds
     assert tracker.set_tracking_profile("RESPONSIVE") is True
     assert len(captured_options) == 2
     opts_responsive = captured_options[1]
-    assert opts_responsive.min_hand_detection_confidence == 0.50
+    assert pytest.approx(opts_responsive.min_hand_detection_confidence, abs=1e-3) == 0.55
     assert opts_responsive.min_hand_presence_confidence == 0.50
     assert opts_responsive.min_tracking_confidence == 0.50
     assert tracker.landmarker_creation_count == 2
@@ -388,21 +388,21 @@ def test_visual_profile_changes_do_not_rebuild_tracker():
     try:
         initial_creation_count = app.async_tracker.tracker.landmarker_creation_count
         initial_profile = app.async_tracker.tracking_profile
-        assert initial_profile == "STABLE"
+        assert initial_profile == "RESPONSIVE"
 
         app.set_quality_profile("BALANCED")
         assert app.quality_profile == "BALANCED"
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
         assert app.async_tracker.tracker.landmarker_creation_count == initial_creation_count
 
         app.set_quality_profile("LOW")
         assert app.quality_profile == "LOW"
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
         assert app.async_tracker.tracker.landmarker_creation_count == initial_creation_count
 
         app.set_quality_profile("HIGH")
         assert app.quality_profile == "HIGH"
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
         assert app.async_tracker.tracker.landmarker_creation_count == initial_creation_count
     finally:
         app.shutdown()
@@ -664,7 +664,7 @@ def test_hand_landmarker_transactional_reconfiguration(monkeypatch):
     assert async_tracker._latest_hands[0] is dummy_hand
 
     # 8. M-key failure cannot silently leave HUD/profile state inconsistent
-    app = GestureARApp(start_threads=False, init_mediapipe=False)
+    app = GestureARApp(start_threads=False, init_mediapipe=False, tracking_profile="STABLE")
     app.async_tracker.tracker.init_mediapipe = True
     app.async_tracker.tracker.landmarker = old_lm
     app.async_tracker.tracker.hands = old_lm
@@ -793,10 +793,11 @@ def test_non_finite_landmarks_rejection():
 
 def test_duplicate_raw_left_case_a():
     """
-    Case A: Duplicate raw Left detections in a single frame.
-    - Resolves to exactly one application 'Right' hand.
-    - No false 'Left' hand is emitted.
-    - Tracker temporal state registers only 'Right'.
+    Case A / Test A: Duplicate raw Left detections in a single frame.
+    - Preserves BOTH hands as independent application 'Right' and 'Left'.
+    - Candidate on screen-left (mirrored x=200) maps to 'Right'.
+    - Candidate on screen-right (mirrored x=800) maps to 'Left'.
+    - Tracker temporal state registers both 'Right' and 'Left'.
     - Initial baseline velocity is (0.0, 0.0) without spikes.
     """
     tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
@@ -818,23 +819,27 @@ def test_duplicate_raw_left_case_a():
     )
 
     hands = tracker.process(frame, timestamp=1.0)
-    assert len(hands) == 1
-    assert hands[0].handedness == "Right"
+    assert len(hands) == 2
+    hand_map = {h.handedness: h for h in hands}
+    assert "Right" in hand_map
+    assert "Left" in hand_map
     assert "Right" in tracker._filters
-    assert "Left" not in tracker._filters
-    assert hands[0].wrist_velocity == (0.0, 0.0)
-    for tip_vel in hands[0].fingertip_velocities.values():
-        assert tip_vel == (0.0, 0.0)
-    # Selected candidate is cand0 (higher score 0.90)
-    assert pytest.approx(hands[0].landmarks_px[0, 0], abs=1e-3) == 200.0
+    assert "Left" in tracker._filters
+    for h_data in hands:
+        assert h_data.wrist_velocity == (0.0, 0.0)
+        for tip_vel in h_data.fingertip_velocities.values():
+            assert tip_vel == (0.0, 0.0)
+    assert pytest.approx(hand_map["Right"].landmarks_px[0, 0], abs=1e-3) == 200.0
+    assert pytest.approx(hand_map["Left"].landmarks_px[0, 0], abs=1e-3) == 800.0
 
 
 def test_duplicate_raw_right_case_b():
     """
-    Case B: Duplicate raw Right detections in a single frame.
-    - Resolves to exactly one application 'Left' hand.
-    - No false 'Right' hand is emitted.
-    - Tracker temporal state registers only 'Left'.
+    Case B / Test B: Duplicate raw Right detections in a single frame.
+    - Preserves BOTH hands as independent application 'Left' and 'Right'.
+    - Candidate on screen-right (mirrored x=700) maps to 'Left'.
+    - Candidate on screen-left (mirrored x=300) maps to 'Right'.
+    - Tracker temporal state registers both 'Left' and 'Right'.
     - Initial baseline velocity is (0.0, 0.0) without spikes.
     """
     tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
@@ -856,26 +861,30 @@ def test_duplicate_raw_right_case_b():
     )
 
     hands = tracker.process(frame, timestamp=1.0)
-    assert len(hands) == 1
-    assert hands[0].handedness == "Left"
+    assert len(hands) == 2
+    hand_map = {h.handedness: h for h in hands}
+    assert "Left" in hand_map
+    assert "Right" in hand_map
     assert "Left" in tracker._filters
-    assert "Right" not in tracker._filters
-    assert hands[0].wrist_velocity == (0.0, 0.0)
-    for tip_vel in hands[0].fingertip_velocities.values():
-        assert tip_vel == (0.0, 0.0)
-    # Selected candidate is cand0 (higher score 0.85)
-    assert pytest.approx(hands[0].landmarks_px[0, 0], abs=1e-3) == 700.0
+    assert "Right" in tracker._filters
+    for h_data in hands:
+        assert h_data.wrist_velocity == (0.0, 0.0)
+        for tip_vel in h_data.fingertip_velocities.values():
+            assert tip_vel == (0.0, 0.0)
+    assert pytest.approx(hand_map["Left"].landmarks_px[0, 0], abs=1e-3) == 700.0
+    assert pytest.approx(hand_map["Right"].landmarks_px[0, 0], abs=1e-3) == 300.0
 
 
 def test_duplicate_wrist_continuity_selection_case_c():
     """
-    Case C: Wrist continuity selection over confidence.
-    - Pre-established wrist near mirrored x=200 (raw x=0.8).
+    Case C: Wrist continuity with duplicate detections in frame 2.
+    - Pre-established wrist near mirrored x=200 (Right).
     - Frame 2 has duplicate candidates:
-      - Candidate 0: mirrored x=900 (raw x=0.1) with higher score 0.99
-      - Candidate 1: mirrored x=210 (raw x=0.79) with lower score 0.50
-    - Candidate 1 (closest to 200) MUST be selected due to motion continuity.
-    - Velocity corresponds to ~10px displacement, NOT 700px.
+      - Candidate 0: mirrored x=900 (score 0.99)
+      - Candidate 1: mirrored x=210 (score 0.50, distance = 10px)
+    - BOTH hands are preserved.
+    - Candidate 1 is continuously matched to Right (velocity ~ 10px / 0.02s = 500 px/s).
+    - Candidate 0 is assigned to Left with safe baseline (velocity = 0.0).
     """
     tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
     mock_lm = MockTasksLandmarker()
@@ -896,9 +905,7 @@ def test_duplicate_wrist_continuity_selection_case_c():
     assert pytest.approx(hands1[0].landmarks_px[0, 0], abs=1e-3) == 200.0
 
     # Frame 2 (dt = 0.02s): Duplicate candidates
-    # cand0: raw x=0.1 -> mirrored x=900.0, score=0.99 (distance = 700px)
     cand0_lms = [MockNormalizedLandmark(x=0.1, y=0.5, z=0.0) for _ in range(21)]
-    # cand1: raw x=0.79 -> mirrored x=210.0, score=0.50 (distance = 10px)
     cand1_lms = [MockNormalizedLandmark(x=0.79, y=0.5, z=0.0) for _ in range(21)]
 
     mock_lm.result = MockTasksResult(
@@ -907,21 +914,27 @@ def test_duplicate_wrist_continuity_selection_case_c():
     )
 
     hands2 = tracker.process(frame, timestamp=1.02)
-    assert len(hands2) == 1
-    assert hands2[0].handedness == "Right"
-    # Candidate 1 should be selected
-    assert pytest.approx(hands2[0].landmarks_px[0, 0], abs=1e-3) == 210.0
-    # Velocity vx should be ~ 10px / 0.02s = 500 px/s, NOT 700 / 0.02 = 35000 px/s
-    assert pytest.approx(hands2[0].wrist_velocity[0], abs=1.0) == 500.0
-    assert pytest.approx(hands2[0].wrist_velocity[1], abs=1.0) == 0.0
+    assert len(hands2) == 2
+    hand_map2 = {h.handedness: h for h in hands2}
+    assert "Right" in hand_map2
+    assert "Left" in hand_map2
+
+    # Continuous candidate matches Right
+    assert pytest.approx(hand_map2["Right"].landmarks_px[0, 0], abs=1e-3) == 210.0
+    assert pytest.approx(hand_map2["Right"].wrist_velocity[0], abs=1.0) == 500.0
+    assert pytest.approx(hand_map2["Right"].wrist_velocity[1], abs=1.0) == 0.0
+
+    # Newly appeared Left hand starts with safe baseline (no false velocity spike)
+    assert pytest.approx(hand_map2["Left"].landmarks_px[0, 0], abs=1e-3) == 900.0
+    assert hand_map2["Left"].wrist_velocity == (0.0, 0.0)
 
 
 def test_duplicate_initial_score_selection_case_d():
     """
-    Case D: Initial duplicate (no previous state) resolves using classification score.
-    - Candidate 0: score 0.60
-    - Candidate 1: score 0.95
-    - Candidate 1 is chosen.
+    Case D: Initial duplicate detections on frame 1 preserve both hands via screen-side prior.
+    - Candidate 0: score 0.60 at mirrored x=500 (screen-right)
+    - Candidate 1: score 0.95 at mirrored x=200 (screen-left)
+    - Both hands are preserved without dropping either hand.
     """
     tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
     mock_lm = MockTasksLandmarker()
@@ -931,9 +944,7 @@ def test_duplicate_initial_score_selection_case_d():
     w, h = 1000, 1000
     frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-    # Candidate 0: raw x=0.5 (mirrored 500), score 0.60
     cand0_lms = [MockNormalizedLandmark(x=0.5, y=0.5, z=0.0) for _ in range(21)]
-    # Candidate 1: raw x=0.8 (mirrored 200), score 0.95
     cand1_lms = [MockNormalizedLandmark(x=0.8, y=0.5, z=0.0) for _ in range(21)]
 
     mock_lm.result = MockTasksResult(
@@ -942,15 +953,18 @@ def test_duplicate_initial_score_selection_case_d():
     )
 
     hands = tracker.process(frame, timestamp=1.0)
-    assert len(hands) == 1
-    assert hands[0].handedness == "Right"
-    assert pytest.approx(hands[0].landmarks_px[0, 0], abs=1e-3) == 200.0
+    assert len(hands) == 2
+    hand_map = {h.handedness: h for h in hands}
+    assert "Right" in hand_map
+    assert "Left" in hand_map
+    assert pytest.approx(hand_map["Right"].landmarks_px[0, 0], abs=1e-3) == 200.0
+    assert pytest.approx(hand_map["Left"].landmarks_px[0, 0], abs=1e-3) == 500.0
 
 
 def test_duplicate_score_absent_non_finite_tied_case_e():
     """
-    Case E: Score absent (None), non-finite (NaN/Inf), or tied resolves deterministically
-    by upstream source order without crashing.
+    Case E: Score absent (None), non-finite (NaN/Inf), or tied preserves both hands
+    deterministically without dropping either hand or crashing.
     """
     tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
     mock_lm = MockTasksLandmarker()
@@ -969,8 +983,10 @@ def test_duplicate_score_absent_non_finite_tied_case_e():
         handedness=[[MockCategory(category_name="Left", score=None)], [MockCategory(category_name="Left", score=None)]],
     )
     hands_none = tracker.process(frame, timestamp=1.0)
-    assert len(hands_none) == 1
-    assert pytest.approx(hands_none[0].landmarks_px[0, 0], abs=1e-3) == 400.0
+    assert len(hands_none) == 2
+    hand_map_none = {h.handedness: h for h in hands_none}
+    assert pytest.approx(hand_map_none["Right"].landmarks_px[0, 0], abs=1e-3) == 400.0
+    assert pytest.approx(hand_map_none["Left"].landmarks_px[0, 0], abs=1e-3) == 700.0
 
     tracker.reset_temporal_state()
 
@@ -980,8 +996,10 @@ def test_duplicate_score_absent_non_finite_tied_case_e():
         handedness=[[MockCategory(category_name="Left", score=float("nan"))], [MockCategory(category_name="Left", score=float("inf"))]],
     )
     hands_nan = tracker.process(frame, timestamp=2.0)
-    assert len(hands_nan) == 1
-    assert pytest.approx(hands_nan[0].landmarks_px[0, 0], abs=1e-3) == 400.0
+    assert len(hands_nan) == 2
+    hand_map_nan = {h.handedness: h for h in hands_nan}
+    assert pytest.approx(hand_map_nan["Right"].landmarks_px[0, 0], abs=1e-3) == 400.0
+    assert pytest.approx(hand_map_nan["Left"].landmarks_px[0, 0], abs=1e-3) == 700.0
 
     tracker.reset_temporal_state()
 
@@ -991,8 +1009,10 @@ def test_duplicate_score_absent_non_finite_tied_case_e():
         handedness=[[MockCategory(category_name="Left", score=0.85)], [MockCategory(category_name="Left", score=0.85)]],
     )
     hands_tied = tracker.process(frame, timestamp=3.0)
-    assert len(hands_tied) == 1
-    assert pytest.approx(hands_tied[0].landmarks_px[0, 0], abs=1e-3) == 400.0
+    assert len(hands_tied) == 2
+    hand_map_tied = {h.handedness: h for h in hands_tied}
+    assert pytest.approx(hand_map_tied["Right"].landmarks_px[0, 0], abs=1e-3) == 400.0
+    assert pytest.approx(hand_map_tied["Left"].landmarks_px[0, 0], abs=1e-3) == 700.0
 
 
 def test_normal_two_hands_preserved_case_f():
@@ -1067,9 +1087,7 @@ def test_duplicate_handedness_instrument_safety_case_g():
             return True
 
     mock_audio = MockAudio()
-    # Piano placed on 1280x720 frame
     piano = Piano(bbox=(64, 518, 1216, 691), audio_engine=mock_audio)
-    # Guitar placed on 1280x720 frame
     guitar = Guitar(zones={"fretboard": (150, 250, 450, 450), "strum_zone": (550, 450, 850, 650)}, audio_engine=mock_audio)
 
     tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
@@ -1080,12 +1098,10 @@ def test_duplicate_handedness_instrument_safety_case_g():
     w, h = 1280, 720
     frame = np.zeros((h, w, 3), dtype=np.uint8)
 
-    # White key 0 rect: wx1, wy1, wx2, wy2
     wkey = piano.white_keys[0]
     key_center_x = (wkey.rect[0] + wkey.rect[2]) / 2.0
-    # In normalised mirrored coords: mirrored_x = key_center_x / w -> raw_x = 1.0 - (key_center_x / w)
     raw_key_x = 1.0 - (key_center_x / w)
-    key_hover_y = (wkey.rect[1] + 10.0) / h  # Resting just inside top of key
+    key_hover_y = (wkey.rect[1] + 10.0) / h
 
     # Frame 1 at t=1.0: Hand hovering resting on piano key
     hand_hover = [MockNormalizedLandmark(x=raw_key_x, y=key_hover_y, z=0.0) for _ in range(21)]
@@ -1112,16 +1128,352 @@ def test_duplicate_handedness_instrument_safety_case_g():
     )
 
     hands2 = tracker.process(frame, timestamp=1.05)
-    assert len(hands2) == 1
-    # Candidate 0 must be chosen by wrist continuity
-    assert pytest.approx(hands2[0].landmarks_px[0, 1], abs=1.0) == key_hover_y * h
-    # Vy must be ~ 0 px/s
-    assert abs(hands2[0].fingertip_velocities[8][1]) < 10.0
+    assert len(hands2) == 2
+    hand_map2 = {h.handedness: h for h in hands2}
+
+    # Candidate 0 matches Right resting in place, Vy must be ~ 0 px/s
+    assert pytest.approx(hand_map2["Right"].landmarks_px[0, 1], abs=1.0) == key_hover_y * h
+    assert abs(hand_map2["Right"].fingertip_velocities[8][1]) < 10.0
+
+    # Candidate 1 starts with safe zero baseline
+    assert hand_map2["Left"].wrist_velocity == (0.0, 0.0)
+    assert hand_map2["Left"].fingertip_velocities[8] == (0.0, 0.0)
 
     piano.update(hands2, frame_shape=(h, w, 3), current_time=1.05)
     guitar.update(hands2, frame_shape=(h, w, 3), current_time=1.05)
 
-    # Assert NO false piano note triggers and NO false guitar strums occurred
     assert len(mock_audio.triggered_notes) == 0, f"Expected 0 piano notes, got {mock_audio.triggered_notes}"
     assert len(mock_audio.plucked_strings) == 0, f"Expected 0 guitar strums, got {mock_audio.plucked_strings}"
+
+
+def test_temporal_continuity_duplicate_labels_test_c():
+    """
+    Test C: Temporal continuity with duplicate labels.
+    Frame 1:
+    - logical Right wrist around x=250;
+    - logical Left wrist around x=1000.
+    Frame 2 classifier reports both same label (raw Left -> mirrored Right).
+    Candidates remain near x=260 and x=990 (dt = 0.02s).
+    Expected:
+    - both survive;
+    - identities remain spatially continuous;
+    - velocities correspond to ~10px movement;
+    - no cross-hand teleport.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1: Right at 250 (raw x = 1.0 - 250/1280 = 0.8047), Left at 1000 (raw x = 1.0 - 1000/1280 = 0.21875)
+    raw_x_r1 = 1.0 - (250.0 / w)
+    raw_x_l1 = 1.0 - (1000.0 / w)
+    f1_cand_r = [MockNormalizedLandmark(x=raw_x_r1, y=0.5, z=0.0) for _ in range(21)]
+    f1_cand_l = [MockNormalizedLandmark(x=raw_x_l1, y=0.5, z=0.0) for _ in range(21)]
+
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[f1_cand_r, f1_cand_l],
+        handedness=[[MockCategory(category_name="Left", score=0.95)], [MockCategory(category_name="Right", score=0.92)]],
+    )
+    hands1 = tracker.process(frame, timestamp=1.0)
+    assert len(hands1) == 2
+    map1 = {h.handedness: h for h in hands1}
+    assert pytest.approx(map1["Right"].landmarks_px[0, 0], abs=1.0) == 250.0
+    assert pytest.approx(map1["Left"].landmarks_px[0, 0], abs=1.0) == 1000.0
+
+    # Frame 2 (dt = 0.02s): Classifier reports BOTH as raw Left (both mirrored Right)
+    # Candidates are near x=260 and x=990
+    raw_x_r2 = 1.0 - (260.0 / w)
+    raw_x_l2 = 1.0 - (990.0 / w)
+    f2_cand_r = [MockNormalizedLandmark(x=raw_x_r2, y=0.5, z=0.0) for _ in range(21)]
+    f2_cand_l = [MockNormalizedLandmark(x=raw_x_l2, y=0.5, z=0.0) for _ in range(21)]
+
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[f2_cand_r, f2_cand_l],
+        handedness=[[MockCategory(category_name="Left", score=0.88)], [MockCategory(category_name="Left", score=0.82)]],
+    )
+
+    hands2 = tracker.process(frame, timestamp=1.02)
+    assert len(hands2) == 2
+    map2 = {h.handedness: h for h in hands2}
+    assert "Right" in map2
+    assert "Left" in map2
+
+    # Spatially continuous matching
+    assert pytest.approx(map2["Right"].landmarks_px[0, 0], abs=1.0) == 260.0
+    assert pytest.approx(map2["Left"].landmarks_px[0, 0], abs=1.0) == 990.0
+
+    # Velocities correspond to ~10px movement over 0.02s (500 px/s), NOT 740px teleport
+    assert pytest.approx(map2["Right"].wrist_velocity[0], abs=5.0) == 500.0
+    assert pytest.approx(map2["Left"].wrist_velocity[0], abs=5.0) == -500.0
+
+
+def test_classifier_labels_swap_test_d():
+    """
+    Test D: Classifier labels swap between frames.
+    Frame 1: Normal Left/Right labels (Right near 250, Left near 1000).
+    Frame 2: Labels are swapped by detector, but spatial movement is tiny (255, 995).
+    Expected:
+    - temporal identities remain stable;
+    - no velocity spike;
+    - both hands remain present.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    raw_x_r1 = 1.0 - (250.0 / w)
+    raw_x_l1 = 1.0 - (1000.0 / w)
+    f1_cand_r = [MockNormalizedLandmark(x=raw_x_r1, y=0.5, z=0.0) for _ in range(21)]
+    f1_cand_l = [MockNormalizedLandmark(x=raw_x_l1, y=0.5, z=0.0) for _ in range(21)]
+
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[f1_cand_r, f1_cand_l],
+        handedness=[[MockCategory(category_name="Left", score=0.95)], [MockCategory(category_name="Right", score=0.92)]],
+    )
+    hands1 = tracker.process(frame, timestamp=1.0)
+    assert len(hands1) == 2
+
+    # Frame 2: Classifier labels swapped!
+    # Candidate near 255 labeled as raw Right (mirrored Left)
+    # Candidate near 995 labeled as raw Left (mirrored Right)
+    raw_x_r2 = 1.0 - (255.0 / w)
+    raw_x_l2 = 1.0 - (995.0 / w)
+    f2_cand_r = [MockNormalizedLandmark(x=raw_x_r2, y=0.5, z=0.0) for _ in range(21)]
+    f2_cand_l = [MockNormalizedLandmark(x=raw_x_l2, y=0.5, z=0.0) for _ in range(21)]
+
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[f2_cand_r, f2_cand_l],
+        handedness=[[MockCategory(category_name="Right", score=0.91)], [MockCategory(category_name="Left", score=0.93)]],
+    )
+
+    hands2 = tracker.process(frame, timestamp=1.02)
+    assert len(hands2) == 2
+    map2 = {h.handedness: h for h in hands2}
+    assert "Right" in map2
+    assert "Left" in map2
+
+    # Temporal identities preserved despite swapped classifier labels
+    assert pytest.approx(map2["Right"].landmarks_px[0, 0], abs=1.0) == 255.0
+    assert pytest.approx(map2["Left"].landmarks_px[0, 0], abs=1.0) == 995.0
+
+    # Velocities: 5px / 0.02s = 250 px/s (no teleport spike)
+    assert pytest.approx(map2["Right"].wrist_velocity[0], abs=5.0) == 250.0
+    assert pytest.approx(map2["Left"].wrist_velocity[0], abs=5.0) == -250.0
+
+
+def test_actual_crossing_hands_test_e():
+    """
+    Test E: Actual hand crossing across multiple consecutive frames.
+    - Two hands move toward and across each other.
+    - Screen side alone must not permanently invert identity.
+    - No same-frame state sharing and no extreme velocity spikes.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Trajectories: Hand A moves 400 -> 450 -> 495 -> 540 -> 590
+    # Hand B moves 600 -> 550 -> 505 -> 460 -> 410
+    traj_a = [400.0, 450.0, 495.0, 540.0, 590.0]
+    traj_b = [600.0, 550.0, 505.0, 460.0, 410.0]
+
+    for step_idx in range(len(traj_a)):
+        xa = traj_a[step_idx]
+        xb = traj_b[step_idx]
+        t = 1.0 + step_idx * 0.033
+
+        raw_xa = 1.0 - (xa / w)
+        raw_xb = 1.0 - (xb / w)
+        cand_a = [MockNormalizedLandmark(x=raw_xa, y=0.5, z=0.0) for _ in range(21)]
+        cand_b = [MockNormalizedLandmark(x=raw_xb, y=0.5, z=0.0) for _ in range(21)]
+
+        mock_lm.result = MockTasksResult(
+            hand_landmarks=[cand_a, cand_b],
+            handedness=[[MockCategory(category_name="Left", score=0.90)], [MockCategory(category_name="Right", score=0.90)]],
+        )
+
+        hands = tracker.process(frame, timestamp=t)
+        assert len(hands) == 2, f"Failed at step {step_idx}: expected 2 hands, got {len(hands)}"
+        hand_map = {h.handedness: h for h in hands}
+        assert "Right" in hand_map
+        assert "Left" in hand_map
+
+        # Ensure no shared landmark memory
+        assert hand_map["Right"].landmarks_px is not hand_map["Left"].landmarks_px
+        assert not np.array_equal(hand_map["Right"].landmarks_px, hand_map["Left"].landmarks_px)
+
+        # Ensure no extreme velocity spikes (> 3000 px/s)
+        for h_obj in hands:
+            assert abs(h_obj.wrist_velocity[0]) < 3000.0
+            assert abs(h_obj.wrist_velocity[1]) < 3000.0
+
+
+def test_single_hand_only_test_f():
+    """
+    Test F: Single hand detection works normally without inventing a phantom second hand.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    single_lms = [MockNormalizedLandmark(x=0.8, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[single_lms],
+        handedness=[[MockCategory(category_name="Left", score=0.92)]],
+    )
+
+    hands = tracker.process(frame, timestamp=1.0)
+    assert len(hands) == 1
+    assert hands[0].handedness == "Right"
+    assert len(tracker._filters) == 1
+    assert "Right" in tracker._filters
+    assert "Left" not in tracker._filters
+
+
+def test_tracking_loss_reacquisition_safe_baseline_test_g():
+    """
+    Test G: Tracking loss and reacquisition.
+    - Temporarily lose one hand.
+    - Reacquired hand must start with a safe zero velocity baseline.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    cand_r = [MockNormalizedLandmark(x=0.75, y=0.5, z=0.0) for _ in range(21)]  # mirrored 250
+    cand_l = [MockNormalizedLandmark(x=0.25, y=0.5, z=0.0) for _ in range(21)]  # mirrored 750
+
+    # Frame 1: Two hands present
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[cand_r, cand_l],
+        handedness=[[MockCategory(category_name="Left", score=0.95)], [MockCategory(category_name="Right", score=0.92)]],
+    )
+    hands1 = tracker.process(frame, timestamp=1.0)
+    assert len(hands1) == 2
+
+    # Frame 2: Left hand lost (only Right detected at mirrored 255)
+    cand_r2 = [MockNormalizedLandmark(x=0.745, y=0.5, z=0.0) for _ in range(21)]  # mirrored 255
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[cand_r2],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    hands2 = tracker.process(frame, timestamp=1.05)
+    assert len(hands2) == 1
+    assert hands2[0].handedness == "Right"
+    assert "Left" not in tracker._filters, "Lost hand was not evicted from tracker temporal state"
+
+    # Frame 3: Left hand reacquired at mirrored 760
+    cand_r3 = [MockNormalizedLandmark(x=0.740, y=0.5, z=0.0) for _ in range(21)]  # mirrored 260
+    cand_l3 = [MockNormalizedLandmark(x=0.240, y=0.5, z=0.0) for _ in range(21)]  # mirrored 760
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[cand_r3, cand_l3],
+        handedness=[[MockCategory(category_name="Left", score=0.95)], [MockCategory(category_name="Right", score=0.90)]],
+    )
+    hands3 = tracker.process(frame, timestamp=1.10)
+    assert len(hands3) == 2
+    map3 = {h.handedness: h for h in hands3}
+
+    # Continuously tracked Right hand has normal velocity
+    assert pytest.approx(map3["Right"].wrist_velocity[0], abs=5.0) == 100.0  # 5px / 0.05s
+
+    # Reacquired Left hand must start with safe zero baseline without teleport spikes
+    assert map3["Left"].wrist_velocity == (0.0, 0.0)
+    for tip_v in map3["Left"].fingertip_velocities.values():
+        assert tip_v == (0.0, 0.0)
+
+
+def test_piano_guitar_safety_duplicate_swap_test_h():
+    """
+    Test H: Piano & Guitar interaction safety under duplicate and swapped classification sequence.
+    - Feed sequence: Normal -> Duplicate -> Swapped.
+    - Verify NO false piano strike or guitar strum is caused solely by identity transitions.
+    """
+    from instruments import Piano, Guitar
+
+    class MockAudio:
+        def __init__(self):
+            self.triggered_notes = []
+            self.plucked_strings = []
+
+        def play_piano(self, freq: float, velocity: float = 1.0, pan: float = 0.0):
+            self.triggered_notes.append((freq, velocity, pan))
+
+        def play_guitar(self, string_idx: int, chord_name: str = "C", velocity: float = 1.0) -> bool:
+            self.plucked_strings.append((string_idx, chord_name, velocity))
+            return True
+
+    mock_audio = MockAudio()
+    piano = Piano(bbox=(64, 518, 1216, 691), audio_engine=mock_audio)
+    guitar = Guitar(zones={"fretboard": (150, 250, 450, 450), "strum_zone": (550, 450, 850, 650)}, audio_engine=mock_audio)
+
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1 (t=1.0): Normal hands hovering above piano keys (Right at 250, Left at 1000)
+    raw_x_r = 1.0 - (250.0 / w)
+    raw_x_l = 1.0 - (1000.0 / w)
+    c_r = [MockNormalizedLandmark(x=raw_x_r, y=0.75, z=0.0) for _ in range(21)]
+    c_l = [MockNormalizedLandmark(x=raw_x_l, y=0.75, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[c_r, c_l],
+        handedness=[[MockCategory(category_name="Left", score=0.90)], [MockCategory(category_name="Right", score=0.90)]],
+    )
+    h1 = tracker.process(frame, timestamp=1.0)
+    piano.update(h1, frame_shape=(h, w, 3), current_time=1.0)
+    guitar.update(h1, frame_shape=(h, w, 3), current_time=1.0)
+    assert len(mock_audio.triggered_notes) == 0
+    assert len(mock_audio.plucked_strings) == 0
+
+    # Frame 2 (t=1.03): Duplicate raw Left classification with small spatial drift (252, 998)
+    c_r2 = [MockNormalizedLandmark(x=1.0 - (252.0 / w), y=0.75, z=0.0) for _ in range(21)]
+    c_l2 = [MockNormalizedLandmark(x=1.0 - (998.0 / w), y=0.75, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[c_r2, c_l2],
+        handedness=[[MockCategory(category_name="Left", score=0.85)], [MockCategory(category_name="Left", score=0.80)]],
+    )
+    h2 = tracker.process(frame, timestamp=1.03)
+    piano.update(h2, frame_shape=(h, w, 3), current_time=1.03)
+    guitar.update(h2, frame_shape=(h, w, 3), current_time=1.03)
+    assert len(mock_audio.triggered_notes) == 0
+    assert len(mock_audio.plucked_strings) == 0
+
+    # Frame 3 (t=1.06): Inverted classification labels with small spatial drift (254, 996)
+    c_r3 = [MockNormalizedLandmark(x=1.0 - (254.0 / w), y=0.75, z=0.0) for _ in range(21)]
+    c_l3 = [MockNormalizedLandmark(x=1.0 - (996.0 / w), y=0.75, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[c_r3, c_l3],
+        handedness=[[MockCategory(category_name="Right", score=0.92)], [MockCategory(category_name="Left", score=0.92)]],
+    )
+    h3 = tracker.process(frame, timestamp=1.06)
+    piano.update(h3, frame_shape=(h, w, 3), current_time=1.06)
+    guitar.update(h3, frame_shape=(h, w, 3), current_time=1.06)
+
+    # Neither piano nor guitar should trigger false sound events
+    assert len(mock_audio.triggered_notes) == 0, f"False piano notes triggered: {mock_audio.triggered_notes}"
+    assert len(mock_audio.plucked_strings) == 0, f"False guitar strums triggered: {mock_audio.plucked_strings}"
 

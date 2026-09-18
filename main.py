@@ -139,6 +139,7 @@ class GestureARApp:
         quality_profile: str = "HIGH",
         init_mediapipe: bool = True,
         camera_backend: str = "auto",
+        tracking_profile: str = "RESPONSIVE",
     ) -> None:
         self.width = width
         self.height = height
@@ -169,7 +170,7 @@ class GestureARApp:
                 max_num_hands=2,
                 ema_alpha=0.65,
                 filter_mode="one_euro",
-                tracking_profile="STABLE",
+                tracking_profile=tracking_profile,
                 init_mediapipe=init_mediapipe,
             )
             if start_threads:
@@ -199,6 +200,11 @@ class GestureARApp:
         # FPS metrics
         self.prev_frame_time = time.perf_counter()
         self.fps = 0.0
+
+        # Render bottleneck diagnostic state (render FPS << AI FPS with Q:HIGH)
+        self.render_bottleneck_start: Optional[float] = None
+        self.is_render_bottleneck: bool = False
+        self._last_bottleneck_log_time: float = 0.0
 
         # Screen overflow auto-disappearance alert
         self.last_overflow_time: float = 0.0
@@ -283,15 +289,15 @@ class GestureARApp:
             logger.info("Visual Quality Profile switched to: %s", self.quality_profile)
             return "QUALITY"
 
-        # 6. AI Tracking Profile Toggle (m/M): STABLE (0.65 conf) vs RESPONSIVE (0.50 conf)
+        # 6. AI Tracking Profile Toggle (m/M): RESPONSIVE (0.55/0.50 conf) vs STABLE (0.65 conf)
         if key in (ord("m"), ord("M")):
-            current_profile = getattr(self.async_tracker, "tracking_profile", "STABLE")
-            new_profile = "RESPONSIVE" if current_profile == "STABLE" else "STABLE"
+            current_profile = getattr(self.async_tracker, "tracking_profile", "RESPONSIVE")
+            new_profile = "STABLE" if current_profile == "RESPONSIVE" else "RESPONSIVE"
             changed = self.async_tracker.set_tracking_profile(new_profile)
             if changed:
                 self._on_tracking_pipeline_changed()
                 actual_profile = getattr(self.async_tracker, "tracking_profile", new_profile)
-                mode_lbl = "STABLE (Stricter 0.65 Confidence)" if actual_profile == "STABLE" else "RESPONSIVE (Permissive 0.50 Confidence)"
+                mode_lbl = "STABLE (Stricter 0.65 Confidence)" if actual_profile == "STABLE" else "RESPONSIVE (Permissive 0.55/0.50 Confidence)"
                 logger.info("AI tracking profile switched to: %s", mode_lbl)
                 return "TRACKING_PROFILE"
             else:
@@ -467,6 +473,25 @@ class GestureARApp:
                 total_frame_ms = (now - loop_start) * 1000.0
                 self.telemetry["total_ms"] = 0.90 * self.telemetry["total_ms"] + 0.10 * total_frame_ms
 
+                # 11. Sustained render bottleneck diagnostic detection (Render FPS < 0.65 * AI FPS with Q:HIGH for >= 2.0s)
+                ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
+                if self.quality_profile == "HIGH" and ai_fps > 15.0 and self.fps < 0.65 * ai_fps:
+                    if self.render_bottleneck_start is None:
+                        self.render_bottleneck_start = now
+                    elif now - self.render_bottleneck_start >= 2.0:
+                        if not self.is_render_bottleneck:
+                            self.is_render_bottleneck = True
+                            if now - self._last_bottleneck_log_time > 10.0:
+                                logger.info(
+                                    "Render bottleneck detected (Render FPS: %.1f < 0.65 * AI FPS: %.1f with Q:HIGH). Suggesting BALANCED [V].",
+                                    self.fps,
+                                    ai_fps,
+                                )
+                                self._last_bottleneck_log_time = now
+                else:
+                    self.render_bottleneck_start = None
+                    self.is_render_bottleneck = False
+
                 if not self.dispatch_key(raw_key):
                     break
 
@@ -629,6 +654,32 @@ class GestureARApp:
         # 5. Top Cyber Header & Telemetry
         self._render_header(frame, state, len(hands))
 
+        # 6. Subtle Render Bottleneck Diagnostic Warning Banner
+        if self.is_render_bottleneck:
+            bot_text = "RENDER BOTTLENECK -- PRESS V FOR BALANCED"
+            text_size = cv2.getTextSize(bot_text, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)[0]
+            bw = text_size[0] + 20
+            bx1 = (w - bw) // 2
+            bx2 = bx1 + bw
+            by1 = 56
+            by2 = 78
+            sub = frame[by1:by2, bx1:bx2]
+            if sub.size > 0:
+                overlay = np.full_like(sub, (20, 25, 45), dtype=np.uint8)
+                cv2.addWeighted(overlay, 0.80, sub, 0.20, 0, sub)
+                frame[by1:by2, bx1:bx2] = sub
+                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 165, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                frame,
+                bot_text,
+                (bx1 + 10, by2 - 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.40,
+                (0, 215, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
     def _render_header(self, frame: np.ndarray, state: AppState, hand_count: int) -> None:
         """Draws top futuristic glassmorphic cyber header, telemetry status, and controls."""
         h, w = frame.shape[:2]
@@ -714,7 +765,7 @@ class GestureARApp:
 
         # 4. Zone 3: Telemetry Capsule (Center) - Non-Overlapping Spacing
         ai_fps = getattr(self.async_tracker, "ai_fps", 0.0)
-        model_tag = getattr(self.async_tracker, "tracking_profile", "STABLE")
+        model_tag = getattr(self.async_tracker, "tracking_profile", "RESPONSIVE")
         filt_m = self.hand_tracker.filter_mode.lower()
         if filt_m == "one_euro":
             mode_tag = "1-EURO"
@@ -960,8 +1011,11 @@ class GestureARApp:
             f"AI Inference:    {ai_fps:.1f} FPS  (Lat: {ai_lat:.1f} ms, Stale Skip: {stale_frames})",
             f"Active Pipeline: Gesture {self.telemetry['gest_ms']:.1f}ms | Render {self.telemetry['rend_ms']:.1f}ms",
             f"Audio Bus:       {voices} active voices | Peak: {peak:.1f}% (Soft Limiter: Active)",
-            f"Engine Config:   Filter={self.hand_tracker.filter_mode.upper()} | Profile={getattr(self.hand_tracker, 'tracking_profile', 'STABLE')} | Quality={self.quality_profile}",
+            f"Engine Config:   Filter={self.hand_tracker.filter_mode.upper()} | Profile={getattr(self.hand_tracker, 'tracking_profile', 'RESPONSIVE')} | Quality={self.quality_profile}",
         ]
+
+        if self.is_render_bottleneck:
+            lines.append("Alert:           RENDER BOTTLENECK -- PRESS V FOR BALANCED")
 
         if hasattr(self, "guitar") and self.guitar is not None:
             g = self.guitar

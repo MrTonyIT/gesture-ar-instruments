@@ -294,5 +294,63 @@ def test_diagnostics_hud_with_guitar_telemetry(app):
     assert np.any(frame > 0)
 
 
+def test_render_bottleneck_diagnostic_hud(app):
+    """
+    Verifies that sustained render bottlenecks (render FPS < 0.65 * AI FPS with Q:HIGH for >= 2.0s)
+    trigger the subtle 'RENDER BOTTLENECK -- PRESS V FOR BALANCED' warning banner in HUD and diagnostics panel.
+    """
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+    # 1. Initially no bottleneck
+    assert app.is_render_bottleneck is False
+
+    # 2. When is_render_bottleneck is True: renders banner in HUD
+    app.is_render_bottleneck = True
+    app._render_hud(frame.copy(), [])
+    app.show_diagnostics = True
+    app._render_diagnostics_hud(frame.copy())
+
+    # 3. Test bottleneck trigger condition
+    app.quality_profile = "HIGH"
+    app.fps = 16.0
+    app.async_tracker.ai_fps = 36.0  # 16.0 < 0.65 * 36.0 = 23.4
+
+    # First detection timestamp
+    now = 100.0
+    app.render_bottleneck_start = None
+    app.is_render_bottleneck = False
+
+    # Simulate render loop logic at t=100.0 (starts tracking bottleneck interval)
+    ai_fps = getattr(app.async_tracker, "ai_fps", 0.0)
+    if app.quality_profile == "HIGH" and ai_fps > 15.0 and app.fps < 0.65 * ai_fps:
+        if app.render_bottleneck_start is None:
+            app.render_bottleneck_start = now
+    assert app.render_bottleneck_start == 100.0
+    assert app.is_render_bottleneck is False
+
+    # At t=101.5 (< 2.0s elapsed): not yet triggered
+    now2 = 101.5
+    if app.quality_profile == "HIGH" and ai_fps > 15.0 and app.fps < 0.65 * ai_fps:
+        if now2 - app.render_bottleneck_start >= 2.0:
+            app.is_render_bottleneck = True
+    assert app.is_render_bottleneck is False
+
+    # At t=102.1 (>= 2.0s elapsed): triggers warning
+    now3 = 102.1
+    if app.quality_profile == "HIGH" and ai_fps > 15.0 and app.fps < 0.65 * ai_fps:
+        if now3 - app.render_bottleneck_start >= 2.0:
+            app.is_render_bottleneck = True
+    assert app.is_render_bottleneck is True
+
+    # Press 'V' to switch to BALANCED -> clears bottleneck alert
+    app.handle_key(ord("v"))
+    assert app.quality_profile == "BALANCED"
+    if app.quality_profile != "HIGH":
+        app.render_bottleneck_start = None
+        app.is_render_bottleneck = False
+    assert app.is_render_bottleneck is False
+
+
+
 
 

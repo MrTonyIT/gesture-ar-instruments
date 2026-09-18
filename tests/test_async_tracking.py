@@ -900,7 +900,7 @@ def test_noop_config_set_preserves_snapshot_and_state():
     # 5. Visual quality profile transitions (HIGH <-> BALANCED <-> LOW) in GestureARApp
     # are decoupled from tracking and preserve the tracking snapshot.
     app = GestureARApp(start_threads=False, init_mediapipe=False, quality_profile="HIGH")
-    assert app.async_tracker.tracking_profile == "STABLE"
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
 
     with app.async_tracker._snapshot_lock:
         app.async_tracker._latest_hands = [dummy_hand]
@@ -909,24 +909,24 @@ def test_noop_config_set_preserves_snapshot_and_state():
     # Switch HIGH -> BALANCED (visual only, tracking snapshot preserved)
     app.set_quality_profile("BALANCED")
     assert app.quality_profile == "BALANCED"
-    assert app.async_tracker.tracking_profile == "STABLE"
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
     assert len(app.async_tracker._latest_hands) == 1, "HIGH -> BALANCED caused tracking snapshot dropout!"
 
     # Switch BALANCED -> LOW (visual only, tracking snapshot preserved)
     app.set_quality_profile("LOW")
     assert app.quality_profile == "LOW"
-    assert app.async_tracker.tracking_profile == "STABLE"
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
     assert len(app.async_tracker._latest_hands) == 1, "BALANCED -> LOW caused tracking snapshot dropout!"
 
     # Switch LOW -> HIGH (visual only, tracking snapshot preserved)
     app.set_quality_profile("HIGH")
     assert app.quality_profile == "HIGH"
-    assert app.async_tracker.tracking_profile == "STABLE"
+    assert app.async_tracker.tracking_profile == "RESPONSIVE"
     assert len(app.async_tracker._latest_hands) == 1, "LOW -> HIGH caused tracking snapshot dropout!"
 
     # 6. Explicit M key or set_tracking_profile DOES perform real tracking transition
     app.handle_key(ord("m"))
-    assert app.async_tracker.tracking_profile == "RESPONSIVE"
+    assert app.async_tracker.tracking_profile == "STABLE"
     assert len(app.async_tracker._latest_hands) == 0, "M key tracking profile switch failed to clear tracking snapshot!"
 
 

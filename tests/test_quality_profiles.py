@@ -50,30 +50,30 @@ def test_app_quality_profile_switching():
     try:
         assert app.quality_profile == "HIGH"
         assert app.quality_config.max_particles == 18
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
 
         app.set_quality_profile("BALANCED")
         assert app.quality_profile == "BALANCED"
         assert app.quality_config.max_particles == 8
         # Visual switch must NOT alter tracking profile
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
 
         app.set_quality_profile("LOW")
         assert app.quality_profile == "LOW"
         assert app.quality_config.max_particles == 0
         assert app.quality_config.enable_glow_effects is False
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
 
         # Invalid profile defaults to HIGH gracefully
         app.set_quality_profile("NON_EXISTENT")
         assert app.quality_profile == "HIGH"
-        assert app.async_tracker.tracking_profile == "STABLE"
+        assert app.async_tracker.tracking_profile == "RESPONSIVE"
 
         # Tracking profile switches independently via tracker interface
-        assert app.async_tracker.set_tracking_profile("RESPONSIVE") is True
-        assert app.async_tracker.tracking_profile == "RESPONSIVE"
+        assert app.async_tracker.set_tracking_profile("STABLE") is True
+        assert app.async_tracker.tracking_profile == "STABLE"
         app.set_quality_profile("LOW")
-        assert app.async_tracker.tracking_profile == "RESPONSIVE"
+        assert app.async_tracker.tracking_profile == "STABLE"
     finally:
         app.shutdown()
 

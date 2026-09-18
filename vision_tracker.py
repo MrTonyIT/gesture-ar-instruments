@@ -8,7 +8,7 @@ Key Features:
   from cv2.VideoCapture at maximum FPS which decouples camera I/O from rendering.
 - HandTracker:
   * Wraps Google MediaPipe Tasks HandLandmarker with configurable tracking profiles
-    (STABLE: 0.65 confidence thresholds, RESPONSIVE: 0.50 confidence thresholds).
+    (RESPONSIVE: 0.55/0.50 confidence thresholds, STABLE: 0.65 confidence thresholds).
   * Raw RGB frame processing paired with mirrored coordinate transformation:
     X_screen = (1.0 - x) * Width.
   * Explicit Handedness label swapping ('Left' <-> 'Right') for intuitive mirrored AR.
@@ -579,7 +579,7 @@ TRACKING_PROFILES: Dict[str, Dict[str, float]] = {
         "tracking_confidence": 0.65,
     },
     "RESPONSIVE": {
-        "detection_confidence": 0.50,
+        "detection_confidence": 0.55,
         "presence_confidence": 0.50,
         "tracking_confidence": 0.50,
     },
@@ -593,7 +593,7 @@ class HandTracker:
     Specifications:
     - Wraps modern Google MediaPipe Tasks HandLandmarker using bundled models/hand_landmarker.task.
     - Operates in RunningMode.VIDEO (with strictly monotonic millisecond timestamps) or RunningMode.IMAGE.
-    - Tracking profiles: 'STABLE' (stricter 0.65 confidence thresholds) or 'RESPONSIVE' (permissive 0.50 confidence thresholds).
+    - Tracking profiles: 'RESPONSIVE' (permissive 0.55/0.50 confidence thresholds, default) or 'STABLE' (stricter 0.65 confidence thresholds).
     - Flips X coordinate: X_screen = (1.0 - x) * Width.
     - Swaps Handedness label: 'Left' becomes 'Right' and vice versa.
     - Unified BaseFilter hierarchy (OneEuroFilter, DeadbandFilter, EMAFilter, RawFilter).
@@ -609,7 +609,7 @@ class HandTracker:
         min_tracking_confidence: Optional[float] = None,
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",  # "one_euro", "deadband", "ema", "raw"
-        tracking_profile: str = "STABLE",  # "STABLE" (0.65 conf) or "RESPONSIVE" (0.50 conf)
+        tracking_profile: str = "RESPONSIVE",  # "RESPONSIVE" (0.55/0.50 conf, default) or "STABLE" (0.65 conf)
         init_mediapipe: bool = True,
         model_path: Optional[str] = None,
         model_complexity: Optional[int] = None,  # Deprecated: use tracking_profile
@@ -625,7 +625,7 @@ class HandTracker:
         else:
             self.tracking_profile = str(tracking_profile).strip().upper()
         if self.tracking_profile not in TRACKING_PROFILES:
-            self.tracking_profile = "STABLE"
+            self.tracking_profile = "RESPONSIVE"
 
         self.init_mediapipe = init_mediapipe
         self.model_path = model_path
@@ -636,6 +636,7 @@ class HandTracker:
         self._prev_timestamps: Dict[str, float] = {}
         self._prev_fingertip_px: Dict[str, Dict[int, np.ndarray]] = {}
         self._prev_wrist_px: Dict[str, np.ndarray] = {}
+        self._prev_wrist_vel: Dict[str, Tuple[float, float]] = {}
 
         self.landmarker = None
         self.hands = None  # Reference alias for compatibility with callers/mocks
@@ -791,6 +792,123 @@ class HandTracker:
         self._prev_timestamps.clear()
         self._prev_fingertip_px.clear()
         self._prev_wrist_px.clear()
+        self._prev_wrist_vel.clear()
+
+    def _reset_role_temporal_state(self, role: str) -> None:
+        """Safely re-baselines temporal and filter state for a single role without affecting the other."""
+        self._filters.pop(role, None)
+        self._smoothed_landmarks.pop(role, None)
+        self._prev_timestamps.pop(role, None)
+        self._prev_fingertip_px.pop(role, None)
+        self._prev_wrist_px.pop(role, None)
+        self._prev_wrist_vel.pop(role, None)
+
+    def _assign_candidates_to_roles(
+        self, candidates: List[Dict[str, Any]], w: int, h: int
+    ) -> List[Tuple[Dict[str, Any], str]]:
+        """
+        Assigns up to two detected hand candidates to logical application roles ('Left', 'Right').
+
+        Cost signals:
+        1. Temporal continuity: Distance between candidate wrist and previous wrist
+           (with predictive kinematic extrapolation when velocity exists).
+        2. Soft classifier prior: Handedness classification penalty (80px) when candidate's
+           mirrored label differs from assigned role. For duplicate labels (both Left or both Right),
+           penalties are identical (80px == 80px), canceling out and letting temporal continuity decide.
+        3. Mirrored screen-side geometry prior: When NO temporal history exists (Frame 1),
+           physical Right normally appears on screen-left (smaller x) and physical Left normally
+           appears on screen-right (larger x). Screen side is inactive when temporal history exists,
+           allowing hands to cross without spurious identity inversion.
+        """
+        if not candidates:
+            return []
+
+        p_left = self._prev_wrist_px.get("Left")
+        p_right = self._prev_wrist_px.get("Right")
+        v_left = self._prev_wrist_vel.get("Left", (0.0, 0.0))
+        v_right = self._prev_wrist_vel.get("Right", (0.0, 0.0))
+
+        # Extrapolate previous wrist position slightly along previous velocity
+        pred_left = None
+        if p_left is not None:
+            pred_left = p_left + np.array(v_left, dtype=np.float32) * 0.033
+        pred_right = None
+        if p_right is not None:
+            pred_right = p_right + np.array(v_right, dtype=np.float32) * 0.033
+
+        if len(candidates) == 1:
+            c0 = candidates[0]
+            w0 = np.array([c0["raw_coords"][0, 0] * w, c0["raw_coords"][0, 1] * h], dtype=np.float32)
+            m0 = c0["mirrored_label"]
+
+            target_l = pred_left if pred_left is not None else p_left
+            target_r = pred_right if pred_right is not None else p_right
+
+            if target_l is not None and target_r is not None:
+                # Both roles were active in previous frame, one was lost: match to closest
+                d_l = float(np.linalg.norm(w0 - target_l))
+                d_r = float(np.linalg.norm(w0 - target_r))
+                pen_l = 80.0 if m0 != "Left" else 0.0
+                pen_r = 80.0 if m0 != "Right" else 0.0
+                role = "Left" if (d_l + pen_l) < (d_r + pen_r) else "Right"
+                return [(c0, role)]
+
+            # If only one role (or no role) was active, use classifier label directly in single-hand mode
+            return [(c0, m0)]
+
+        # len(candidates) >= 2
+        cand_list = candidates
+        if len(cand_list) > 2:
+            def cand_rank(c):
+                score_val = c["score"] if c["score"] is not None and np.isfinite(c["score"]) else 0.0
+                return (-score_val, c["source_order"])
+            cand_list = sorted(cand_list, key=cand_rank)[:2]
+
+        c0, c1 = cand_list[0], cand_list[1]
+        w0 = np.array([c0["raw_coords"][0, 0] * w, c0["raw_coords"][0, 1] * h], dtype=np.float32)
+        w1 = np.array([c1["raw_coords"][0, 0] * w, c1["raw_coords"][0, 1] * h], dtype=np.float32)
+        m0 = c0["mirrored_label"]
+        m1 = c1["mirrored_label"]
+
+        cost1 = 0.0  # Assignment 1: c0 -> Left, c1 -> Right
+        cost2 = 0.0  # Assignment 2: c0 -> Right, c1 -> Left
+
+        target_l = pred_left if pred_left is not None else p_left
+        target_r = pred_right if pred_right is not None else p_right
+
+        # 1. Temporal continuity distance
+        if target_l is not None and target_r is not None:
+            cost1 += float(np.linalg.norm(w0 - target_l) + np.linalg.norm(w1 - target_r))
+            cost2 += float(np.linalg.norm(w0 - target_r) + np.linalg.norm(w1 - target_l))
+        elif target_l is not None:
+            cost1 += float(np.linalg.norm(w0 - target_l))
+            cost2 += float(np.linalg.norm(w1 - target_l))
+        elif target_r is not None:
+            cost1 += float(np.linalg.norm(w1 - target_r))
+            cost2 += float(np.linalg.norm(w0 - target_r))
+
+        # 2. Soft classifier prior penalty
+        pen_c0_l = 80.0 if m0 != "Left" else 0.0
+        pen_c1_r = 80.0 if m1 != "Right" else 0.0
+        cost1 += (pen_c0_l + pen_c1_r)
+
+        pen_c0_r = 80.0 if m0 != "Right" else 0.0
+        pen_c1_l = 80.0 if m1 != "Left" else 0.0
+        cost2 += (pen_c0_r + pen_c1_l)
+
+        # 3. Mirrored screen-side geometry prior (only when no temporal history exists)
+        if target_l is None and target_r is None:
+            if w0[0] < w1[0]:
+                cost1 += 120.0
+            elif w0[0] > w1[0]:
+                cost2 += 120.0
+            else:
+                cost1 += 10.0
+
+        if cost1 < cost2:
+            return [(c0, "Left"), (c1, "Right")]
+        else:
+            return [(c0, "Right"), (c1, "Left")]
 
     def set_filter_mode(self, mode: str) -> bool:
         """
@@ -809,7 +927,7 @@ class HandTracker:
         """
         Dynamically and transactionally switches tracking profile ("STABLE" or "RESPONSIVE").
         STABLE uses stricter confidence thresholds (0.65).
-        RESPONSIVE uses more permissive confidence thresholds (0.50).
+        RESPONSIVE uses more permissive confidence thresholds (0.55/0.50).
 
         Transactional safety:
         If replacement landmarker creation fails, existing landmarker, profile, and
@@ -1024,57 +1142,35 @@ class HandTracker:
                     "source_order": candidate_idx,
                 })
 
-        # Resolve candidates so each canonical application handedness label can update temporal state at most once
-        selected_candidates = []
-        for label in ("Left", "Right"):
-            label_candidates = [c for c in candidates if c["mirrored_label"] == label]
-            if not label_candidates:
-                continue
-            if len(label_candidates) == 1:
-                selected_candidates.append(label_candidates[0])
-            else:
-                # Multiple valid candidates map to the same application handedness label
-                prev_wrist = self._prev_wrist_px.get(label)
-                if prev_wrist is not None:
-                    # Choose candidate whose current mirrored wrist position is closest to previous wrist position
-                    def distance_key(c):
-                        cur_wrist = np.array([c["raw_coords"][0, 0] * w, c["raw_coords"][0, 1] * h], dtype=np.float32)
-                        dist = float(np.linalg.norm(cur_wrist - prev_wrist))
-                        return (dist, c["source_order"])
-
-                    best_cand = min(label_candidates, key=distance_key)
-                else:
-                    # No previous wrist state: prefer higher MediaPipe handedness classification score
-                    # If scores are unavailable or tied: use deterministic source order
-                    def score_key(c):
-                        score_val = c["score"] if c["score"] is not None else float("-inf")
-                        return (-score_val, c["source_order"])
-
-                    best_cand = min(label_candidates, key=score_key)
-
-                selected_candidates.append(best_cand)
-                for dropped in label_candidates:
-                    if dropped is not best_cand:
-                        logger.debug(
-                            "Dropped duplicate candidate for application handedness '%s' (selected source order %d, dropped source order %d)",
-                            label,
-                            best_cand["source_order"],
-                            dropped["source_order"],
-                        )
-
+        # Robust candidate-to-role assignment (preserves up to two candidates under duplicate or swapped labels)
+        assigned_candidates = self._assign_candidates_to_roles(candidates, w, h)
         # Preserve deterministic source order in output stream
-        selected_candidates.sort(key=lambda c: c["source_order"])
+        assigned_candidates.sort(key=lambda pair: pair[0]["source_order"])
 
-        for cand in selected_candidates:
-            mirrored_label = cand["mirrored_label"]
+        for cand, role in assigned_candidates:
             raw_coords = cand["raw_coords"]
-            currently_detected_labels.append(mirrored_label)
+            currently_detected_labels.append(role)
+
+            cur_raw_wrist = np.array([raw_coords[0, 0] * w, raw_coords[0, 1] * h], dtype=np.float32)
+            prev_wrist = self._prev_wrist_px.get(role)
+
+            # Check for identity discontinuity (> 220px jump or untrusted transition)
+            discontinuous = False
+            if prev_wrist is not None:
+                dist = float(np.linalg.norm(cur_raw_wrist - prev_wrist))
+                if dist > 220.0:
+                    logger.debug("Identity discontinuity detected for role '%s' (dist=%.1fpx > 220px). Re-baselining.", role, dist)
+                    self._reset_role_temporal_state(role)
+                    discontinuous = True
+                    prev_wrist = None
+            else:
+                discontinuous = True
 
             # Tracking Filtering via BaseFilter interface
-            if mirrored_label not in self._filters:
-                self._filters[mirrored_label] = self._create_filter_instance()
-            smoothed_norm = self._filters[mirrored_label].filter(raw_coords, measurement_time)
-            self._smoothed_landmarks[mirrored_label] = smoothed_norm
+            if role not in self._filters:
+                self._filters[role] = self._create_filter_instance()
+            smoothed_norm = self._filters[role].filter(raw_coords, measurement_time)
+            self._smoothed_landmarks[role] = smoothed_norm
 
             # Convert to screen pixel coordinates
             landmarks_px = np.empty_like(smoothed_norm)
@@ -1082,42 +1178,40 @@ class HandTracker:
             landmarks_px[:, 1] = smoothed_norm[:, 1] * h
             landmarks_px[:, 2] = smoothed_norm[:, 2] * w  # Depth scaled to width
 
-            # Velocity calculation for fingertips and wrist (pixels/second)
-            dt = measurement_time - self._prev_timestamps.get(mirrored_label, measurement_time)
-            dt = max(0.001, dt)
-            self._prev_timestamps[mirrored_label] = measurement_time
-
-            # Wrist velocity calculation
             cur_wrist = landmarks_px[0, :2]
-            prev_wrist = self._prev_wrist_px.get(mirrored_label)
-            if prev_wrist is not None:
+
+            # Velocity calculation for fingertips and wrist (pixels/second)
+            if discontinuous or prev_wrist is None:
+                wrist_vel = (0.0, 0.0)
+                velocities = {tip_idx: (0.0, 0.0) for tip_idx in self.FINGERTIP_INDICES}
+            else:
+                dt = measurement_time - self._prev_timestamps.get(role, measurement_time)
+                dt = max(0.001, dt)
                 vw_x = float((cur_wrist[0] - prev_wrist[0]) / dt)
                 vw_y = float((cur_wrist[1] - prev_wrist[1]) / dt)
                 wrist_vel = (vw_x, vw_y)
-            else:
-                wrist_vel = (0.0, 0.0)
-            self._prev_wrist_px[mirrored_label] = cur_wrist.copy()
 
-            velocities: Dict[int, Tuple[float, float]] = {}
-            prev_tips = self._prev_fingertip_px.get(mirrored_label, {})
-            current_tips: Dict[int, np.ndarray] = {}
+                velocities = {}
+                prev_tips = self._prev_fingertip_px.get(role, {})
+                for tip_idx in self.FINGERTIP_INDICES:
+                    cur_pt = landmarks_px[tip_idx, :2]
+                    if tip_idx in prev_tips:
+                        delta = cur_pt - prev_tips[tip_idx]
+                        vx = float(delta[0] / dt)
+                        vy = float(delta[1] / dt)
+                        velocities[tip_idx] = (vx, vy)
+                    else:
+                        velocities[tip_idx] = (0.0, 0.0)
 
-            for tip_idx in self.FINGERTIP_INDICES:
-                cur_pt = landmarks_px[tip_idx, :2]
-                current_tips[tip_idx] = cur_pt.copy()
-                if tip_idx in prev_tips:
-                    delta = cur_pt - prev_tips[tip_idx]
-                    vx = float(delta[0] / dt)
-                    vy = float(delta[1] / dt)
-                    velocities[tip_idx] = (vx, vy)
-                else:
-                    velocities[tip_idx] = (0.0, 0.0)
-
-            self._prev_fingertip_px[mirrored_label] = current_tips
+            self._prev_timestamps[role] = measurement_time
+            self._prev_wrist_px[role] = cur_wrist.copy()
+            self._prev_wrist_vel[role] = wrist_vel
+            current_tips = {tip_idx: landmarks_px[tip_idx, :2].copy() for tip_idx in self.FINGERTIP_INDICES}
+            self._prev_fingertip_px[role] = current_tips
 
             tracked_hands.append(
                 HandData(
-                    handedness=mirrored_label,
+                    handedness=role,
                     landmarks_norm=smoothed_norm,
                     landmarks_px=landmarks_px,
                     fingertip_velocities=velocities,
@@ -1128,13 +1222,9 @@ class HandTracker:
             )
 
         # Evict stale hands from filter memory if no longer in frame
-        for label in list(self._smoothed_landmarks.keys()):
+        for label in ("Left", "Right"):
             if label not in currently_detected_labels:
-                del self._smoothed_landmarks[label]
-                self._filters.pop(label, None)
-                self._prev_timestamps.pop(label, None)
-                self._prev_fingertip_px.pop(label, None)
-                self._prev_wrist_px.pop(label, None)
+                self._reset_role_temporal_state(label)
 
         return tracked_hands
 
@@ -1177,7 +1267,7 @@ class AsyncHandTracker:
         min_tracking_confidence: Optional[float] = None,
         ema_alpha: float = 0.65,
         filter_mode: str = "one_euro",
-        tracking_profile: str = "STABLE",
+        tracking_profile: str = "RESPONSIVE",
         init_mediapipe: bool = True,
         model_complexity: Optional[int] = None,  # Deprecated: use tracking_profile
     ) -> None:
