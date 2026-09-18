@@ -634,9 +634,18 @@ class Guitar:
         self.sprite_h, self.sprite_w = self.sprite.shape[:2]
 
         # 2. Dynamic Pose Anchors (EMA smoothed)
-        self.current_neck_pt = np.array([280.0, 390.0], dtype=np.float32)
-        self.current_body_pt = np.array([820.0, 560.0], dtype=np.float32)
+        # Default to mirrored camera posture (neck on screen-right, body on screen-left)
+        self.body_side_sign: int = -1
+        self.current_neck_pt = np.array([960.0, 390.0], dtype=np.float32)
+        self.current_body_pt = np.array([500.0, 560.0], dtype=np.float32)
         self.ema_alpha = 0.70  # Snappy, real-time pose tracking without floating delay
+
+        # Strumming collision & audio telemetry for developer diagnostics
+        self.strum_count: int = 0
+        self.last_strum_string: Optional[int] = None
+        self.last_strum_note: Optional[str] = None
+        self.last_strum_played: Optional[bool] = None
+        self.last_strum_time: Optional[float] = None
 
         self.active_chord = "C"
         self.active_fret_finger: Optional[int] = 8  # Default to index finger (C)
@@ -716,6 +725,7 @@ class Guitar:
         """
         Computes the 2x3 Affine transformation matrix aligning the sprite anchors
         with the current smoothed neck and body anchor points.
+        Supports both body-left (mirrored webcam view) and body-right configurations.
         """
         h_bg, w_bg = frame_shape[:2]
 
@@ -731,20 +741,25 @@ class Guitar:
         max_scale = min(0.82, float((h_bg * 0.52) / max(1.0, float(self.sprite_h))))
         scale = float(np.clip(dist / self.SPRITE_REF_SPAN, 0.50, max_scale))
 
-        raw_theta = float(np.arctan2(dy, dx))
-        # Clamp theta to ergonomic playing angle (8 to 28 degrees)
-        # Keeps neck tilted comfortably from lap to left hand without angling into face/chin
+        # Clamp downward tilt angle (8 to 28 degrees)
+        raw_theta = float(np.arctan2(dy, max(1.0, abs(dx))))
         theta = float(np.clip(raw_theta, np.radians(8.0), np.radians(28.0)))
 
         cos_t = float(np.cos(theta))
         sin_t = float(np.sin(theta))
 
+        side_sign = float(self.body_side_sign)  # -1 for body-left, +1 for body-right
+        u_hat = np.array([side_sign * cos_t, sin_t], dtype=np.float32)
+        v_hat = np.array([-side_sign * sin_t, cos_t], dtype=np.float32)
+
         u1, v1 = self.SPRITE_ANCHOR_NECK
 
-        # Affine matrix: maps (u1, v1) -> (x_l, y_l) and (u2, v2) -> (x_r, y_r)
+        # Affine matrix: maps (u1, v1) -> (x_l, y_l)
+        # Column 0 is scale * u_hat, column 1 is scale * v_hat
+        # Translation ensures (u1, v1) maps to (x_l, y_l)
         M = np.array([
-            [scale * cos_t, -scale * sin_t, x_l - scale * (u1 * cos_t - v1 * sin_t)],
-            [scale * sin_t,  scale * cos_t, y_l - scale * (u1 * sin_t + v1 * cos_t)]
+            [scale * u_hat[0], scale * v_hat[0], x_l - scale * (u_hat[0] * u1 + v_hat[0] * v1)],
+            [scale * u_hat[1], scale * v_hat[1], y_l - scale * (u_hat[1] * u1 + v_hat[1] * v1)]
         ], dtype=np.float32)
 
         return M, np.array([scale, theta], dtype=np.float32)
@@ -812,7 +827,21 @@ class Guitar:
             raw_body_x = float(right_hand.landmarks_px[0, 0])
             raw_body_y = float(right_hand.landmarks_px[0, 1])
             body_y = max(float(h_bg * 0.60), raw_body_y + 70.0)
-            body_x = max(target_neck[0] + 320.0, raw_body_x + 40.0)
+
+            # Determine body orientation with hysteresis (+-80px threshold) to prevent flipping jitter
+            delta_x = raw_body_x - target_neck[0]
+            if delta_x < -80.0:
+                self.body_side_sign = -1
+            elif delta_x > 80.0:
+                self.body_side_sign = 1
+
+            if self.body_side_sign == -1:
+                # Body is screen-left of neck (mirrored webcam view)
+                body_x = min(target_neck[0] - 180.0, raw_body_x - 30.0)
+            else:
+                # Body is screen-right of neck (unmirrored / left-handed view)
+                body_x = max(target_neck[0] + 180.0, raw_body_x + 40.0)
+
             target_body = np.array([body_x, body_y], dtype=np.float32)
 
             # Direct Adaptive Pose Tracking for Guitar Anchors
@@ -830,21 +859,24 @@ class Guitar:
             a_neck = 1.0 if delta_n > 14.0 else (0.90 if delta_n > 2.5 else 0.0)
             self.current_neck_pt = a_neck * target_neck + (1.0 - a_neck) * self.current_neck_pt
 
-            # Infer right body position resting down at lap level
-            inferred_body = target_neck + np.array([460.0, 140.0], dtype=np.float32)
+            # Infer body position resting down at lap level based on current body_side_sign
+            inferred_body = target_neck + np.array([float(self.body_side_sign) * 460.0, 140.0], dtype=np.float32)
             inferred_body[1] = max(float(h_bg * 0.60), float(inferred_body[1]))
             self.current_body_pt = 0.90 * inferred_body + 0.10 * self.current_body_pt
         elif right_hand is not None:
             raw_body_x = float(right_hand.landmarks_px[0, 0])
             raw_body_y = float(right_hand.landmarks_px[0, 1])
             body_y = max(float(h_bg * 0.60), raw_body_y + 70.0)
-            body_x = max(float(w_bg * 0.55), raw_body_x + 40.0)
+            if self.body_side_sign == -1:
+                body_x = min(float(w_bg * 0.45), raw_body_x - 30.0)
+            else:
+                body_x = max(float(w_bg * 0.55), raw_body_x + 40.0)
             target_body = np.array([body_x, body_y], dtype=np.float32)
             delta_b = float(np.linalg.norm(target_body - self.current_body_pt))
             a_body = 1.0 if delta_b > 14.0 else (0.90 if delta_b > 2.5 else 0.0)
             self.current_body_pt = a_body * target_body + (1.0 - a_body) * self.current_body_pt
 
-            inferred_neck = target_body - np.array([460.0, 140.0], dtype=np.float32)
+            inferred_neck = target_body - np.array([float(self.body_side_sign) * 460.0, 140.0], dtype=np.float32)
             inferred_neck[1] = max(float(h_bg * 0.40), float(inferred_neck[1]))
             self.current_neck_pt = 0.90 * inferred_neck + 0.10 * self.current_neck_pt
 
@@ -992,6 +1024,14 @@ class Guitar:
                                 string.vibration_amplitude = norm_vol * 2.5
                             string.vibration_phase = 0.0
 
+                            # Telemetry update
+                            self.strum_count += 1
+                            self.last_strum_string = string.index
+                            _, note_tag, _ = self.get_fretted_note(self.active_chord, string.index)
+                            self.last_strum_note = note_tag
+                            self.last_strum_played = played
+                            self.last_strum_time = now
+
                 self._prev_strum_finger_positions[tip_id] = curr_pos
 
             self._prev_right_timestamp = now
@@ -1111,7 +1151,8 @@ class Guitar:
                             cv2.circle(frame, sp_pos, 4, (0, 240, 255), 1, cv2.LINE_AA)
 
                 # Note label or muted indicator near bridge
-                bx_t = int(round(p2[0])) + 8
+                offset_x = 8 if self.body_side_sign == 1 else -24
+                bx_t = int(round(p2[0])) + offset_x
                 by_t = int(round(p2[1])) + 4
                 if is_muted:
                     cv2.putText(frame, "X", (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 120, 220), 1, cv2.LINE_AA)
@@ -1130,7 +1171,8 @@ class Guitar:
                 cv2.line(frame, pt1_i, pt2_i, color, thickness, lineType=cv2.LINE_AA)
 
                 # Show note name or 'X' near bridge even when resting
-                bx_t = int(round(p2[0])) + 8
+                offset_x = 8 if self.body_side_sign == 1 else -24
+                bx_t = int(round(p2[0])) + offset_x
                 by_t = int(round(p2[1])) + 4
                 if is_muted:
                     cv2.putText(frame, "X", (bx_t, by_t), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (100, 100, 160), 1, cv2.LINE_AA)

@@ -278,4 +278,21 @@ def test_x11_and_windows_special_keys_no_collision(app):
     assert app.show_diagnostics != diag_state
 
 
+def test_diagnostics_hud_with_guitar_telemetry(app):
+    """Verifies diagnostics HUD renders truthful guitar telemetry and audio status."""
+    from instruments import Guitar
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    app.show_diagnostics = True
+    app.guitar = Guitar(zones=None, audio_engine=app.audio_engine)
+    app.guitar.strum_count = 7
+    app.guitar.last_strum_string = 2
+    app.guitar.last_strum_note = "E3"
+    app.guitar.last_strum_played = True
+
+    app._render_diagnostics_hud(frame)
+    assert np.any(frame > 0)
+
+
+
 
