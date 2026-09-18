@@ -136,7 +136,7 @@ class GestureARApp:
         camera: Optional[ThreadedCamera] = None,
         tracker: Optional[AsyncHandTracker] = None,
         start_threads: bool = True,
-        quality_profile: str = "HIGH",
+        quality_profile: str = "BALANCED",
         init_mediapipe: bool = True,
         camera_backend: str = "auto",
         tracking_profile: str = "RESPONSIVE",
@@ -225,9 +225,12 @@ class GestureARApp:
         """Applies explicit visual quality profile (HIGH, BALANCED, LOW)."""
         key = profile.upper()
         if key not in QUALITY_PROFILES:
-            key = "HIGH"
+            key = "BALANCED"
         self.quality_profile = key
         self.quality_config = QUALITY_PROFILES[key]
+        if key != "HIGH":
+            self.render_bottleneck_start = None
+            self.is_render_bottleneck = False
 
     def handle_key(self, raw_key: int) -> Optional[str]:
         """

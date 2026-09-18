@@ -601,6 +601,8 @@ class HandTracker:
     """
 
     FINGERTIP_INDICES = [4, 8, 12, 16, 20]  # Thumb, Index, Middle, Ring, Pinky
+    IDENTITY_DISCONTINUITY_THRESHOLD: float = 220.0  # px maximum spatial jump for identity continuity
+    MAX_PREDICTION_DISPLACEMENT: float = 60.0  # px maximum kinematic extrapolation displacement
 
     def __init__(
         self,
@@ -828,24 +830,29 @@ class HandTracker:
         v_left = self._prev_wrist_vel.get("Left", (0.0, 0.0))
         v_right = self._prev_wrist_vel.get("Right", (0.0, 0.0))
 
-        # Extrapolate previous wrist position slightly along previous velocity
-        pred_left = None
-        if p_left is not None:
-            pred_left = p_left + np.array(v_left, dtype=np.float32) * 0.033
-        pred_right = None
-        if p_right is not None:
-            pred_right = p_right + np.array(v_right, dtype=np.float32) * 0.033
+        # Extrapolate previous wrist position along previous velocity (bounded displacement)
+        def _get_pred_wrist(p: Optional[np.ndarray], v: Tuple[float, float]) -> Optional[np.ndarray]:
+            if p is None:
+                return None
+            disp = np.array(v, dtype=np.float32) * 0.033
+            norm = float(np.linalg.norm(disp))
+            if norm > self.MAX_PREDICTION_DISPLACEMENT:
+                disp = disp * (self.MAX_PREDICTION_DISPLACEMENT / norm)
+            return p + disp
+
+        pred_left = _get_pred_wrist(p_left, v_left)
+        pred_right = _get_pred_wrist(p_right, v_right)
+
+        target_l = pred_left if pred_left is not None else p_left
+        target_r = pred_right if pred_right is not None else p_right
 
         if len(candidates) == 1:
             c0 = candidates[0]
             w0 = np.array([c0["raw_coords"][0, 0] * w, c0["raw_coords"][0, 1] * h], dtype=np.float32)
             m0 = c0["mirrored_label"]
 
-            target_l = pred_left if pred_left is not None else p_left
-            target_r = pred_right if pred_right is not None else p_right
-
+            # Case A: Both role histories exist (one hand was temporarily lost in this frame)
             if target_l is not None and target_r is not None:
-                # Both roles were active in previous frame, one was lost: match to closest
                 d_l = float(np.linalg.norm(w0 - target_l))
                 d_r = float(np.linalg.norm(w0 - target_r))
                 pen_l = 80.0 if m0 != "Left" else 0.0
@@ -853,7 +860,21 @@ class HandTracker:
                 role = "Left" if (d_l + pen_l) < (d_r + pen_r) else "Right"
                 return [(c0, role)]
 
-            # If only one role (or no role) was active, use classifier label directly in single-hand mode
+            # Case B & D: Exactly ONE role history exists
+            if target_l is not None and target_r is None:
+                d_exist = float(np.linalg.norm(w0 - target_l))
+                if d_exist <= self.IDENTITY_DISCONTINUITY_THRESHOLD:
+                    return [(c0, "Left")]
+                # Beyond continuity threshold: allow reassignment to classifier label
+                return [(c0, m0)]
+            elif target_r is not None and target_l is None:
+                d_exist = float(np.linalg.norm(w0 - target_r))
+                if d_exist <= self.IDENTITY_DISCONTINUITY_THRESHOLD:
+                    return [(c0, "Right")]
+                # Beyond continuity threshold: allow reassignment to classifier label
+                return [(c0, m0)]
+
+            # Case C: No role history exists
             return [(c0, m0)]
 
         # len(candidates) >= 2
@@ -1154,12 +1175,17 @@ class HandTracker:
             cur_raw_wrist = np.array([raw_coords[0, 0] * w, raw_coords[0, 1] * h], dtype=np.float32)
             prev_wrist = self._prev_wrist_px.get(role)
 
-            # Check for identity discontinuity (> 220px jump or untrusted transition)
+            # Check for identity discontinuity (> threshold jump or untrusted transition)
             discontinuous = False
             if prev_wrist is not None:
                 dist = float(np.linalg.norm(cur_raw_wrist - prev_wrist))
-                if dist > 220.0:
-                    logger.debug("Identity discontinuity detected for role '%s' (dist=%.1fpx > 220px). Re-baselining.", role, dist)
+                if dist > self.IDENTITY_DISCONTINUITY_THRESHOLD:
+                    logger.debug(
+                        "Identity discontinuity detected for role '%s' (dist=%.1fpx > %.1fpx). Re-baselining.",
+                        role,
+                        dist,
+                        self.IDENTITY_DISCONTINUITY_THRESHOLD,
+                    )
                     self._reset_role_temporal_state(role)
                     discontinuous = True
                     prev_wrist = None

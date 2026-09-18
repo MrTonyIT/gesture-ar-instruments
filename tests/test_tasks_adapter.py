@@ -479,7 +479,8 @@ def test_handedness_category_validation():
     assert len(res) == 1
     assert res[0].handedness == "Right"
 
-    # 2. Canonical 'Right' -> mirrored 'Left'
+    # 2. Canonical 'Right' -> mirrored 'Left' (isolated without prior temporal history)
+    tracker.reset_temporal_state()
     mock_lm.result = MockTasksResult(
         hand_landmarks=[lms_21],
         handedness=[[MockCategory(category_name="Right")]],
@@ -1476,4 +1477,261 @@ def test_piano_guitar_safety_duplicate_swap_test_h():
     # Neither piano nor guitar should trigger false sound events
     assert len(mock_audio.triggered_notes) == 0, f"False piano notes triggered: {mock_audio.triggered_notes}"
     assert len(mock_audio.plucked_strings) == 0, f"False guitar strums triggered: {mock_audio.plucked_strings}"
+
+
+def test_single_hand_stable_test_1():
+    """
+    Test 1: Stable single hand without classifier flip.
+    - Frame 1: Candidate maps to application Right at x=300.
+    - Frame 2: Same classifier at x=305 (dt=0.033).
+    - Expected: Still Right; velocity ≈ 5px / 0.033s ≈ 151.5 px/s.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1: x=300, raw_x = 1.0 - (300/1000) = 0.70. MediaPipe raw "Left" -> mirrored "Right"
+    lms1 = [MockNormalizedLandmark(x=0.70, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms1],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    hands1 = tracker.process(frame, timestamp=1.0)
+    assert len(hands1) == 1
+    assert hands1[0].handedness == "Right"
+    assert pytest.approx(hands1[0].landmarks_px[0, 0], abs=1.0) == 300.0
+
+    # Frame 2: x=305, raw_x = 1.0 - (305/1000) = 0.695
+    lms2 = [MockNormalizedLandmark(x=0.695, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms2],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    hands2 = tracker.process(frame, timestamp=1.033)
+    assert len(hands2) == 1
+    assert hands2[0].handedness == "Right"
+    assert pytest.approx(hands2[0].landmarks_px[0, 0], abs=1.0) == 305.0
+    # Velocity ≈ 5.0 / 0.033 ≈ 151.5 px/s
+    assert pytest.approx(hands2[0].wrist_velocity[0], abs=5.0) == 151.515
+
+
+def test_single_hand_one_frame_classifier_flip_test_2():
+    """
+    Test 2: One-frame classifier flip for single hand.
+    - Frame 1: Application Right at x=300.
+    - Frame 2: Same physical candidate at x=305; MediaPipe raw classifier intentionally flips to "Right" (mirrored "Left").
+    - Expected: STILL application Right (continuity gate); normal ~5px movement velocity; no reset.
+    - Frame 3: Classifier returns to original value at x=310.
+    - Expected: Still Right; continuity preserved; no zero-baseline dropout; no velocity spike.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1: x=300, raw "Left" -> mirrored "Right"
+    lms1 = [MockNormalizedLandmark(x=0.70, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms1],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    hands1 = tracker.process(frame, timestamp=1.0)
+    assert len(hands1) == 1
+    assert hands1[0].handedness == "Right"
+    assert pytest.approx(hands1[0].landmarks_px[0, 0], abs=1.0) == 300.0
+
+    # Frame 2: x=305, FLIPPED raw classifier to "Right" (mirrored "Left")
+    lms2 = [MockNormalizedLandmark(x=0.695, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms2],
+        handedness=[[MockCategory(category_name="Right", score=0.92)]],
+    )
+    hands2 = tracker.process(frame, timestamp=1.033)
+    assert len(hands2) == 1
+    assert hands2[0].handedness == "Right", "Hand identity incorrectly flipped to Left despite spatial continuity!"
+    assert pytest.approx(hands2[0].landmarks_px[0, 0], abs=1.0) == 305.0
+    # Normal velocity calculated, NOT zeroed by false reset
+    assert pytest.approx(hands2[0].wrist_velocity[0], abs=5.0) == 151.515
+    assert "Left" not in tracker._filters
+
+    # Frame 3: x=310, raw classifier returns to "Left" (mirrored "Right")
+    lms3 = [MockNormalizedLandmark(x=0.690, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms3],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    hands3 = tracker.process(frame, timestamp=1.066)
+    assert len(hands3) == 1
+    assert hands3[0].handedness == "Right"
+    assert pytest.approx(hands3[0].landmarks_px[0, 0], abs=1.0) == 310.0
+    assert pytest.approx(hands3[0].wrist_velocity[0], abs=5.0) == 151.515
+
+
+def test_single_hand_repeated_classifier_flicker_test_3():
+    """
+    Test 3: Repeated classifier flicker across 10 frames with smooth motion.
+    - Alternate classifier Left/Right for 10 frames while wrist moves x=300 -> 345.
+    - Expected: Application identity stays constant ("Right"); exactly one hand each frame;
+      no phantom second hand; no large velocity spikes.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    for i in range(10):
+        x = 300.0 + i * 5.0
+        t = 1.0 + i * 0.033
+        # Alternate classifier: even -> "Left" (mirrored Right), odd -> "Right" (mirrored Left)
+        raw_cat = "Left" if i % 2 == 0 else "Right"
+        lms = [MockNormalizedLandmark(x=1.0 - (x / w), y=0.5, z=0.0) for _ in range(21)]
+        mock_lm.result = MockTasksResult(
+            hand_landmarks=[lms],
+            handedness=[[MockCategory(category_name=raw_cat, score=0.90)]],
+        )
+        hands = tracker.process(frame, timestamp=t)
+        assert len(hands) == 1, f"Frame {i}: Expected 1 hand, got {len(hands)}"
+        assert hands[0].handedness == "Right", f"Frame {i}: Role flickered to {hands[0].handedness}"
+        assert "Left" not in tracker._filters, f"Frame {i}: Phantom filter for Left was created"
+        if i > 0:
+            # Velocity should stay bounded near 151 px/s (never spike above 300 px/s)
+            assert 100.0 < hands[0].wrist_velocity[0] < 200.0
+
+
+def test_single_hand_true_discontinuity_test_4():
+    """
+    Test 4: True spatial discontinuity beyond continuity threshold.
+    - Existing Right history at x=300.
+    - Candidate appears far away at x=800 (> 220px threshold) with classifier mapping to Left.
+    - Expected: Safe reassignment/rebaseline allowed; new velocity baseline = zero; no teleport velocity.
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1000, 1000
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1: Right at x=300
+    lms1 = [MockNormalizedLandmark(x=0.70, y=0.5, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms1],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    hands1 = tracker.process(frame, timestamp=1.0)
+    assert len(hands1) == 1
+    assert hands1[0].handedness == "Right"
+
+    # Frame 2: Candidate appears far away at x=800 with raw "Right" (mirrored "Left")
+    lms2 = [MockNormalizedLandmark(x=0.20, y=0.5, z=0.0) for _ in range(21)]  # 1.0 - 0.20 = 0.80 -> 800px
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms2],
+        handedness=[[MockCategory(category_name="Right", score=0.95)]],
+    )
+    hands2 = tracker.process(frame, timestamp=1.033)
+    assert len(hands2) == 1
+    assert hands2[0].handedness == "Left", "Beyond-threshold candidate should reassign to Left"
+    assert pytest.approx(hands2[0].landmarks_px[0, 0], abs=1.0) == 800.0
+    # Velocity must start at zero, NO teleport velocity spike
+    assert hands2[0].wrist_velocity == (0.0, 0.0)
+    for tip_v in hands2[0].fingertip_velocities.values():
+        assert tip_v == (0.0, 0.0)
+    # Stale Right role must be evicted
+    assert "Right" not in tracker._filters
+
+
+def test_single_hand_guitar_safety_classifier_flip_test_5():
+    """
+    Test 5: Guitar instrument safety under single-hand classifier flip.
+    - Single visible strumming hand (Right).
+    - Cause one-frame classifier flip without spatial discontinuity.
+    - Verify: Guitar does not treat it as chord-selection hand (Left);
+      no false chord transition; no false strum caused solely by identity flip.
+    """
+    from instruments import Guitar
+
+    class MockAudio:
+        def __init__(self):
+            self.plucked_strings = []
+
+        def play_guitar(self, string_idx: int, chord_name: str = "C", velocity: float = 1.0) -> bool:
+            self.plucked_strings.append((string_idx, chord_name, velocity))
+            return True
+
+    mock_audio = MockAudio()
+    guitar = Guitar(zones={"fretboard": (150, 250, 450, 450), "strum_zone": (550, 450, 850, 650)}, audio_engine=mock_audio)
+
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    mock_lm = MockTasksLandmarker()
+    tracker.landmarker = mock_lm
+    tracker.hands = mock_lm
+
+    w, h = 1280, 720
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+
+    # Frame 1: Strumming hand (Right) hovering in strum zone (screen-left around x=400, y=500)
+    lms1 = [MockNormalizedLandmark(x=1.0 - (400.0 / w), y=500.0 / h, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms1],
+        handedness=[[MockCategory(category_name="Left", score=0.95)]],
+    )
+    h1 = tracker.process(frame, timestamp=1.0)
+    assert len(h1) == 1
+    assert h1[0].handedness == "Right"
+    guitar.update(h1, frame_shape=(h, w, 3), current_time=1.0)
+    initial_chord = guitar.active_chord
+    assert len(mock_audio.plucked_strings) == 0
+
+    # Frame 2: Classifier flips raw to "Right" (mirrored "Left"), moving slightly to x=404, y=500
+    lms2 = [MockNormalizedLandmark(x=1.0 - (404.0 / w), y=500.0 / h, z=0.0) for _ in range(21)]
+    mock_lm.result = MockTasksResult(
+        hand_landmarks=[lms2],
+        handedness=[[MockCategory(category_name="Right", score=0.90)]],
+    )
+    h2 = tracker.process(frame, timestamp=1.033)
+    assert len(h2) == 1
+    assert h2[0].handedness == "Right", "Strumming hand identity flipped to Left!"
+    guitar.update(h2, frame_shape=(h, w, 3), current_time=1.033)
+
+    # Guitar must NOT treat it as chord selection hand or trigger false chords/strums
+    assert guitar.active_chord == initial_chord, "Chord falsely changed due to identity flip!"
+    assert len(mock_audio.plucked_strings) == 0, f"False strum triggered: {mock_audio.plucked_strings}"
+
+
+def test_bounded_velocity_prediction_safeguard():
+    """
+    Verifies that extreme noisy previous wrist velocity does not produce an unbounded
+    predicted target displacement (displacement is strictly bounded by MAX_PREDICTION_DISPLACEMENT).
+    """
+    tracker = HandTracker(init_mediapipe=False, filter_mode="raw")
+    # Simulate an extreme previous velocity of 10,000 px/s on Right
+    tracker._prev_wrist_px["Right"] = np.array([300.0, 500.0], dtype=np.float32)
+    tracker._prev_wrist_vel["Right"] = (10000.0, 10000.0)
+
+    # In _assign_candidates_to_roles, test prediction bounding
+    candidates = [{
+        "mirrored_label": "Right",
+        "raw_coords": np.zeros((21, 3), dtype=np.float32),
+        "score": 0.95,
+        "source_order": 0,
+    }]
+    w, h = 1000, 1000
+    # Candidate raw_coords[0] maps to mirrored screen px = 310
+    candidates[0]["raw_coords"][0, 0] = 1.0 - (310.0 / w)
+    candidates[0]["raw_coords"][0, 1] = 500.0 / h
+
+    assigned = tracker._assign_candidates_to_roles(candidates, w, h)
+    assert len(assigned) == 1
+    assert assigned[0][1] == "Right"
 
