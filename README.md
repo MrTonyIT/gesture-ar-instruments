@@ -49,8 +49,8 @@ An extensive automated test suite covers tracking filters, geometry, synthesis, 
   - `Gesture Machine`: State evaluation and touch collision processing time.
   - `Render Loop`: Vectorized alpha blending and HUD drawing time.
   - `Audio Bus`: Active concurrent voice count and peak amplitude with soft-limiter indicator.
-- **Visual Quality Profiles (`V` key)**: Cycle between `HIGH` (maximum particle and glow effects), `BALANCED`, and `LOW` (reduced visual effects for minimal overhead on low-power hardware).
-- **Tracking Profiles (`M` key)**: Toggle between `STABLE` (stricter 0.65 confidence thresholds) and `RESPONSIVE` (permissive 0.50 confidence thresholds).
+- **Visual Quality Profiles (`V` key)**: Cycle between `BALANCED` (default: 8 particles, glow enabled, optimal frame rates on laptops/webcams), `LOW` (reduced visual effects for minimal overhead on low-power hardware), and `HIGH` (maximum particle, glow, and shockwave effects).
+- **Tracking Profiles (`M` key)**: Toggle between `RESPONSIVE` (default, permissive 0.55/0.50 confidence thresholds for improved recall in difficult lighting) and `STABLE` (stricter 0.65 confidence thresholds).
 
 ### 🎛️ 4. Pluggable Tracking Filter Hierarchy
 Choose between four filtering strategies in `vision_tracker.py`:
@@ -220,8 +220,8 @@ python -m ruff check .
 | **Touch Chord** | Reach into top chord boxes `[1]`–`[9]` | Air Guitar | Direct AR touch selection |
 | **Strum Guitar** | Thumb (4) or Index (8) string crossing | Air Guitar | Strums 6 projected strings via 2D segment intersection in either stroke direction |
 | **Diagnostics** | `F3`, `Tab`, or `` ` `` | Telemetry HUD | Toggles developer diagnostics panel |
-| **Quality Mode** | `V` key | Application | Cycles `HIGH` $\to$ `BALANCED` $\to$ `LOW` visual effects |
-| **Tracking Profile** | `M` key | Hand Tracking | Toggles `STABLE` (0.65 conf) $\leftrightarrow$ `RESPONSIVE` (0.50 conf) |
+| **Quality Mode** | `V` key | Application | Cycles `BALANCED` (default) $\to$ `LOW` $\to$ `HIGH` visual effects |
+| **Tracking Profile** | `M` key | Hand Tracking | Toggles `RESPONSIVE` (0.55/0.50 conf, default) $\leftrightarrow$ `STABLE` (0.65 conf) |
 | **Tracking Filter** | `K` key | Hand Tracking | Cycles `1-Euro` $\to$ `Deadband` $\to$ `EMA` $\to$ `Raw` |
 | **Camera Settings** | `P` key | Camera | Opens native camera properties dialog (Windows DirectShow only) |
 | **Reset State** | Hold `[RESET]` button (0.7s) or `r` / `R` | Application | Resets state machine to `IDLE` |
